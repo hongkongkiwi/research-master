@@ -1,7 +1,7 @@
 //! ORCID research source implementation.
 //!
 //! ORCID provides persistent digital identifiers for researchers.
-//! Free API at https://pub.orcid.org/
+//! Free API at <https://pub.orcid.org/>
 //!
 //! Capabilities: SEARCH, AUTHOR_SEARCH
 

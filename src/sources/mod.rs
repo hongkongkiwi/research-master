@@ -166,8 +166,10 @@ mod worldwidescience;
 #[cfg(feature = "source-zenodo")]
 mod zenodo;
 
+#[cfg(test)]
 pub mod mock;
 
+#[cfg(test)]
 pub use mock::MockSource;
 pub use registry::{SourceCapabilities, SourceRegistry};
 

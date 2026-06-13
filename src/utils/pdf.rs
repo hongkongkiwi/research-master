@@ -83,43 +83,6 @@ pub fn has_tesseract() -> bool {
     available
 }
 
-/// Print installation instructions for PDF extraction tools
-#[allow(dead_code)]
-pub fn print_tool_instructions() {
-    let has_poppler = is_external_available("pdftotext");
-    let has_tesseract = is_external_available("tesseract");
-
-    if !has_poppler || !has_tesseract {
-        eprintln!("\nPDF extraction tools info:");
-
-        if !has_poppler {
-            eprintln!("  - pdftotext: NOT FOUND");
-            #[cfg(windows)]
-            eprintln!(
-                "    Install from: https://github.com/oschwartz10612/poppler-windows/releases/"
-            );
-            #[cfg(not(windows))]
-            eprintln!("    Install with: brew install poppler (macOS) or apt install poppler-utils (Linux)");
-        }
-
-        if !has_tesseract {
-            eprintln!("  - tesseract OCR: NOT FOUND");
-            #[cfg(windows)]
-            eprintln!("    Install from: https://github.com/UB-Mannheim/tesseract/wiki");
-            #[cfg(not(windows))]
-            eprintln!("    Install with: brew install tesseract (macOS) or apt install tesseract-ocr (Linux)");
-        }
-
-        if has_poppler && !has_tesseract {
-            eprintln!("\nNote: Basic PDF text extraction will work via poppler.");
-            eprintln!("OCR is only needed for scanned/image-based PDFs.");
-        } else if !has_poppler {
-            eprintln!("\nNote: Falling back to pure Rust lopdf for basic PDF extraction.");
-            eprintln!("Quality may be reduced for complex PDFs.");
-        }
-    }
-}
-
 /// Get the best available extraction method with metadata
 #[derive(Debug, Clone)]
 pub struct ExtractionInfo {
