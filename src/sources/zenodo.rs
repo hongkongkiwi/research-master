@@ -108,12 +108,14 @@ impl Source for ZenodoSource {
                     .await
                     .unwrap_or_else(|_| "Failed to read response body".to_string());
 
-                let json: ZenodoResponse = serde_json::from_str(&response_text)
-                    .map_err(|e| {
-                        let preview = response_text.chars().take(500).collect::<String>();
-                        tracing::warn!("Zenodo parse error: {}", preview);
-                        SourceError::Parse(format!("Failed to parse Zenodo response: {}. Response: {}", e, preview))
-                    })?;
+                let json: ZenodoResponse = serde_json::from_str(&response_text).map_err(|e| {
+                    let preview = response_text.chars().take(500).collect::<String>();
+                    tracing::warn!("Zenodo parse error: {}", preview);
+                    SourceError::Parse(format!(
+                        "Failed to parse Zenodo response: {}. Response: {}",
+                        e, preview
+                    ))
+                })?;
 
                 Ok(json)
             }
@@ -185,12 +187,14 @@ impl Source for ZenodoSource {
                     SourceError::Network(format!("Failed to read Zenodo response: {}", e))
                 })?;
 
-                serde_json::from_str::<ZenodoResponse>(&response_text)
-                    .map_err(|e| {
-                        let preview = response_text.chars().take(500).collect::<String>();
-                        tracing::warn!("Zenodo DOI parse error: {}", preview);
-                        SourceError::Parse(format!("Failed to parse Zenodo response: {}. Response: {}", e, preview))
-                    })
+                serde_json::from_str::<ZenodoResponse>(&response_text).map_err(|e| {
+                    let preview = response_text.chars().take(500).collect::<String>();
+                    tracing::warn!("Zenodo DOI parse error: {}", preview);
+                    SourceError::Parse(format!(
+                        "Failed to parse Zenodo response: {}. Response: {}",
+                        e, preview
+                    ))
+                })
             }
         })
         .await?;

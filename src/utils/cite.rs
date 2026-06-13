@@ -40,16 +40,38 @@ fn format_authors_apa(authors: &str) -> String {
     if author_list.len() == 1 {
         format_author_apa_single(author_list[0])
     } else if author_list.len() == 2 {
-        format!("{} & {}", format_author_apa_single(author_list[0]), format_author_apa_single(author_list[1]))
+        format!(
+            "{} & {}",
+            format_author_apa_single(author_list[0]),
+            format_author_apa_single(author_list[1])
+        )
     } else if author_list.len() <= 20 {
-        let formatted: Vec<String> = author_list.iter().map(|a| format_author_apa_single(a)).collect();
-        let all_but_last = formatted[..formatted.len()-1].join(", ");
-        format!("{} & {}", all_but_last, formatted.last().unwrap())
+        let formatted: Vec<String> = author_list
+            .iter()
+            .map(|a| format_author_apa_single(a))
+            .collect();
+        let all_but_last = formatted[..formatted.len() - 1].join(", ");
+        format!(
+            "{} & {}",
+            all_but_last,
+            formatted
+                .last()
+                .expect("already checked: format_apa has >= 2 authors")
+        )
     } else {
         // APA: up to 20 authors, then ellipsis
-        let formatted: Vec<String> = author_list[..20].iter().map(|a| format_author_apa_single(a)).collect();
-        let all_but_last = formatted[..formatted.len()-1].join(", ");
-        format!("{} ... {}", all_but_last, formatted.last().unwrap())
+        let formatted: Vec<String> = author_list[..20]
+            .iter()
+            .map(|a| format_author_apa_single(a))
+            .collect();
+        let all_but_last = formatted[..formatted.len() - 1].join(", ");
+        format!(
+            "{} ... {}",
+            all_but_last,
+            formatted
+                .last()
+                .expect("already checked: >20 authors, at least 20")
+        )
     }
 }
 
@@ -59,7 +81,8 @@ fn format_author_apa_single(author: &str) -> String {
         // Already in "Last, First" format
         let last = parts[0].trim();
         let first = parts[1].trim();
-        let initials: String = first.split_whitespace()
+        let initials: String = first
+            .split_whitespace()
             .filter_map(|n| n.chars().next())
             .collect();
         format!("{}, {}.", last, initials)
@@ -67,8 +90,9 @@ fn format_author_apa_single(author: &str) -> String {
         // Try "First Last" format
         let words: Vec<&str> = author.split_whitespace().collect();
         if words.len() >= 2 {
-            let last = words.last().unwrap();
-            let initials: String = words[..words.len()-1].iter()
+            let last = words.last().expect("already checked: words.len() >= 2");
+            let initials: String = words[..words.len() - 1]
+                .iter()
                 .filter_map(|n| n.chars().next())
                 .collect();
             format!("{}, {}.", last, initials)
@@ -89,7 +113,11 @@ fn format_authors_mla(authors: &str) -> String {
     if author_list.len() == 1 {
         format_author_mla_single(author_list[0])
     } else if author_list.len() == 2 {
-        format!("{} and {}", format_author_mla_single(author_list[0]), format_author_mla_remaining(author_list[1]))
+        format!(
+            "{} and {}",
+            format_author_mla_single(author_list[0]),
+            format_author_mla_remaining(author_list[1])
+        )
     } else {
         format!("{} et al", format_author_mla_single(author_list[0]))
     }
@@ -104,7 +132,11 @@ fn format_author_mla_single(author: &str) -> String {
         // "First Last"
         let words: Vec<&str> = author.split_whitespace().collect();
         if words.len() >= 2 {
-            format!("{}, {}", words.last().unwrap(), words[..words.len()-1].join(" "))
+            format!(
+                "{}, {}",
+                words.last().expect("already checked: words.len() >= 2"),
+                words[..words.len() - 1].join(" ")
+            )
         } else {
             author.to_string()
         }
@@ -131,7 +163,11 @@ fn format_authors_chicago(authors: &str) -> String {
     if author_list.len() == 1 {
         format_author_chicago_single(author_list[0])
     } else if author_list.len() == 2 {
-        format!("{} and {}", format_author_chicago_single(author_list[0]), format_author_chicago_remaining(author_list[1]))
+        format!(
+            "{} and {}",
+            format_author_chicago_single(author_list[0]),
+            format_author_chicago_remaining(author_list[1])
+        )
     } else {
         format!("{} et al.", format_author_chicago_single(author_list[0]))
     }
@@ -144,7 +180,11 @@ fn format_author_chicago_single(author: &str) -> String {
     } else {
         let words: Vec<&str> = author.split_whitespace().collect();
         if words.len() >= 2 {
-            format!("{}, {}", words.last().unwrap(), words[..words.len()-1].join(" "))
+            format!(
+                "{}, {}",
+                words.last().expect("already checked: words.len() >= 2"),
+                words[..words.len() - 1].join(" ")
+            )
         } else {
             author.to_string()
         }
@@ -184,7 +224,10 @@ fn format_apa(paper: &Paper) -> String {
     let doi = paper.doi.as_deref().unwrap_or("");
 
     if !doi.is_empty() {
-        format!("{}. ({}). {}. {}. https://doi.org/{}", authors, year, title, source, doi)
+        format!(
+            "{}. ({}). {}. {}. https://doi.org/{}",
+            authors, year, title, source, doi
+        )
     } else {
         format!("{}. ({}). {}. {}.", authors, year, title, source)
     }
@@ -196,16 +239,15 @@ fn format_mla(paper: &Paper) -> String {
     let authors = format_authors_mla(&paper.authors);
     let year = extract_year(paper.published_date.as_deref());
     let title = &paper.title;
-    let formatted_title = if title.ends_with('?') || title.ends_with('!') || title.ends_with('.') {
-        format!("\"{}\"", title)
-    } else {
-        format!("\"{}\"", title)
-    };
+    let formatted_title = format!("\"{}\"", title);
     let source = paper.source.name();
     let doi = paper.doi.as_deref().unwrap_or("");
 
     if !doi.is_empty() {
-        format!("{}. {}. {}, {}. https://doi.org/{}.", authors, formatted_title, source, year, doi)
+        format!(
+            "{}. {}. {}, {}. https://doi.org/{}.",
+            authors, formatted_title, source, year, doi
+        )
     } else {
         format!("{}. {}. {}, {}.", authors, formatted_title, source, year)
     }
@@ -221,7 +263,10 @@ fn format_chicago(paper: &Paper) -> String {
     let doi = paper.doi.as_deref().unwrap_or("");
 
     if !doi.is_empty() {
-        format!("{}. {}. \"{}\". {}. https://doi.org/{}.", authors, year, title, source, doi)
+        format!(
+            "{}. {}. \"{}\". {}. https://doi.org/{}.",
+            authors, year, title, source, doi
+        )
     } else {
         format!("{}. {}. \"{}\". {}.", authors, year, title, source)
     }
@@ -239,38 +284,64 @@ fn format_bibtex(paper: &Paper) -> String {
     // Generate citation key: FirstAuthorLastYearPaperTitle
     let authors = &paper.authors;
     let first_author = authors.split(';').next().unwrap_or("unknown").trim();
-    let last_name = first_author.split(',').next().unwrap_or(first_author).trim();
+    let last_name = first_author
+        .split(',')
+        .next()
+        .unwrap_or(first_author)
+        .trim();
     let last_name = last_name.split_whitespace().last().unwrap_or(last_name);
     let year = extract_year(paper.published_date.as_deref());
     let title_words: Vec<&str> = paper.title.split_whitespace().take(3).collect();
-    let title_key: String = title_words.iter().map(|w| {
-        let cleaned: String = w.chars().filter(|c| c.is_alphanumeric()).collect();
-        cleaned
-    }).collect();
+    let title_key: String = title_words
+        .iter()
+        .map(|w| {
+            let cleaned: String = w.chars().filter(|c| c.is_alphanumeric()).collect();
+            cleaned
+        })
+        .collect();
 
     let key = format!("{}{}{}", last_name, year, title_key);
 
     // Format authors for BibTeX (Last, First and Last, First)
     let bibtex_authors: String = if authors.contains(';') {
         let author_list: Vec<&str> = authors.split(';').map(|s| s.trim()).collect();
-        author_list.iter().map(|a| {
-            let parts: Vec<&str> = a.split(',').map(|s| s.trim()).collect();
-            if parts.len() >= 2 {
-                format!("{} and {} {}", parts[0].trim(), parts[1].trim(), parts[0].trim())
-            } else {
-                // Try "First Last" format
-                let words: Vec<&str> = a.split_whitespace().collect();
-                if words.len() >= 2 {
-                    format!("{} and {} {}", words.last().unwrap(), words[..words.len()-1].join(" "), words.last().unwrap())
+        author_list
+            .iter()
+            .map(|a| {
+                let parts: Vec<&str> = a.split(',').map(|s| s.trim()).collect();
+                if parts.len() >= 2 {
+                    format!(
+                        "{} and {} {}",
+                        parts[0].trim(),
+                        parts[1].trim(),
+                        parts[0].trim()
+                    )
                 } else {
-                    format!("{}", a)
+                    // Try "First Last" format
+                    let words: Vec<&str> = a.split_whitespace().collect();
+                    if words.len() >= 2 {
+                        format!(
+                            "{} and {} {}",
+                            words.last().expect("already checked: words.len() >= 2"),
+                            words[..words.len() - 1].join(" "),
+                            words.last().expect("already checked")
+                        )
+                    } else {
+                        a.to_string()
+                    }
                 }
-            }
-        }).collect::<Vec<_>>().join(" and ")
+            })
+            .collect::<Vec<_>>()
+            .join(" and ")
     } else {
         let parts: Vec<&str> = authors.split(',').map(|s| s.trim()).collect();
         if parts.len() >= 2 {
-            format!("{} and {} {}", parts[0].trim(), parts[1].trim(), parts[0].trim())
+            format!(
+                "{} and {} {}",
+                parts[0].trim(),
+                parts[1].trim(),
+                parts[0].trim()
+            )
         } else {
             authors.to_string()
         }

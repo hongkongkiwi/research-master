@@ -12,6 +12,7 @@
 //! - `arxiv` - Enable arXiv source (default: enabled)
 //! - `pubmed` - Enable PubMed source (default: enabled)
 //! - `biorxiv` - Enable bioRxiv source (default: enabled)
+//! - `medrxiv` - Enable medRxiv source (default: enabled)
 //! - `semantic` - Enable Semantic Scholar source (default: enabled)
 //! - `openalex` - Enable OpenAlex source (default: enabled)
 //! - `crossref` - Enable CrossRef source (default: enabled)
@@ -29,6 +30,7 @@
 //! - `jstor` - Enable JSTOR source (default: enabled)
 //! - `scispace` - Enable SciSpace source (default: enabled)
 //! - `acm` - Enable ACM Digital Library source (default: enabled)
+//! - `citeseerx` - Enable CiteSeerX source (default: enabled)
 //! - `connected_papers` - Enable Connected Papers source (default: enabled)
 //! - `doaj` - Enable DOAJ source (default: enabled)
 //! - `worldwidescience` - Enable WorldWideScience source (default: enabled)
@@ -40,7 +42,7 @@
 //! # Feature Groups
 //!
 //! - `core` - arxiv, pubmed, semantic
-//! - `preprints` - arxiv, biorxiv
+//! - `preprints` - arxiv, biorxiv, medrxiv
 //! - `full` - All sources (default)
 //!
 //! # Runtime Source Configuration
@@ -106,6 +108,8 @@ mod arxiv;
 mod base;
 #[cfg(feature = "source-biorxiv")]
 mod biorxiv;
+#[cfg(feature = "source-citeseerx")]
+mod citeseerx;
 #[cfg(feature = "source-connected_papers")]
 mod connected_papers;
 #[cfg(feature = "source-core-repo")]
@@ -132,8 +136,14 @@ mod ieee_xplore;
 mod jstor;
 #[cfg(feature = "source-mdpi")]
 mod mdpi;
+#[cfg(feature = "source-medrxiv")]
+mod medrxiv;
+#[cfg(feature = "source-openaire")]
+mod openaire;
 #[cfg(feature = "source-openalex")]
 mod openalex;
+#[cfg(feature = "source-orcid")]
+mod orcid;
 #[cfg(feature = "source-osf")]
 mod osf;
 #[cfg(feature = "source-pmc")]
@@ -159,7 +169,6 @@ mod zenodo;
 pub mod mock;
 
 pub use mock::MockSource;
-
 pub use registry::{SourceCapabilities, SourceRegistry};
 
 use crate::models::{

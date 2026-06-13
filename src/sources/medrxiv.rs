@@ -1,36 +1,33 @@
-//! bioRxiv research source implementation.
+//! medRxiv research source implementation.
 //!
-//! Uses the bioRxiv API for searching and downloading preprints.
+//! Uses the medRxiv API for searching and downloading preprints.
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::models::{Paper, PaperBuilder, SearchQuery, SearchResponse, SourceType};
-use crate::sources::{
-    DownloadRequest, DownloadResult, ReadRequest, ReadResult, Source, SourceCapabilities,
-    SourceError,
-};
+use crate::sources::{DownloadRequest, DownloadResult, Source, SourceCapabilities, SourceError};
 use crate::utils::{api_retry_config, with_retry, HttpClient};
 
-const BIORXIV_API_URL: &str = "https://api.biorxiv.org";
-const BIORXIV_SERVER: &str = "biorxiv";
-const BIORXIV_NAME: &str = "bioRxiv";
+const MEDRXIV_API_URL: &str = "https://api.medrxiv.org";
+const MEDRXIV_SERVER: &str = "medrxiv";
+const MEDRXIV_NAME: &str = "medRxiv";
 
-/// bioRxiv research source
+/// medRxiv research source
 #[derive(Debug, Clone)]
-pub struct BiorxivSource {
+pub struct MedrxivSource {
     client: Arc<HttpClient>,
 }
 
-impl BiorxivSource {
+impl MedrxivSource {
     pub fn new() -> Result<Self, SourceError> {
         Ok(Self {
             client: Arc::new(HttpClient::new()?),
         })
     }
 
-    /// Get papers from bioRxiv (cursor-based pagination)
+    /// Get papers from medRxiv (cursor-based pagination)
     async fn get_papers(
         &self,
         cursor: &str,
@@ -44,7 +41,7 @@ impl BiorxivSource {
 
         let url = format!(
             "{}/details/{}/{}/{}/{}",
-            BIORXIV_API_URL, BIORXIV_SERVER, from_date, to_date, cursor
+            MEDRXIV_API_URL, MEDRXIV_SERVER, from_date, to_date, cursor
         );
 
         let client = Arc::clone(&self.client);
@@ -55,17 +52,17 @@ impl BiorxivSource {
             let url = url_for_retry.clone();
             async move {
                 let response = client.get(&url).send().await.map_err(|e| {
-                    SourceError::Network(format!("Failed to fetch from {}: {}", BIORXIV_NAME, e))
+                    SourceError::Network(format!("Failed to fetch from {}: {}", MEDRXIV_NAME, e))
                 })?;
 
                 if !response.status().is_success() {
                     if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                        tracing::debug!("{} rate-limited - returning empty results", BIORXIV_NAME);
-                        return Err(SourceError::Api("bioRxiv rate-limited".to_string()));
+                        tracing::debug!("{} rate-limited - returning empty results", MEDRXIV_NAME);
+                        return Err(SourceError::Api("medRxiv rate-limited".to_string()));
                     }
                     return Err(SourceError::Api(format!(
                         "{} API returned status: {}",
-                        BIORXIV_NAME,
+                        MEDRXIV_NAME,
                         response.status()
                     )));
                 }
@@ -79,10 +76,10 @@ impl BiorxivSource {
                 if !content_type.contains("application/json") {
                     tracing::debug!(
                         "{} returned non-JSON content-type: {} - rate-limited?",
-                        BIORXIV_NAME,
+                        MEDRXIV_NAME,
                         content_type
                     );
-                    return Err(SourceError::Api("bioRxiv rate-limited".to_string()));
+                    return Err(SourceError::Api("medRxiv rate-limited".to_string()));
                 }
 
                 Ok(response)
@@ -94,7 +91,7 @@ impl BiorxivSource {
         let response = match response {
             Ok(r) => r,
             Err(SourceError::Api(msg)) if msg.contains("rate-limited") => {
-                tracing::debug!("bioRxiv rate-limited - returning empty results");
+                tracing::debug!("medRxiv rate-limited - returning empty results");
                 return Ok(vec![]);
             }
             Err(e) => return Err(e),
@@ -118,7 +115,7 @@ impl BiorxivSource {
                 .unwrap_or_else(|| format!("https://doi.org/{}", doi));
 
             papers.push(
-                PaperBuilder::new(doi.clone(), paper.title, url, SourceType::BioRxiv)
+                PaperBuilder::new(doi.clone(), paper.title, url, SourceType::MedRxiv)
                     .authors(authors)
                     .abstract_text(paper.r#abstract.unwrap_or_default())
                     .doi(doi.clone())
@@ -134,7 +131,7 @@ impl BiorxivSource {
 
     /// Parse a DOI to get the paper ID
     fn parse_doi(&self, doi: &str) -> Result<String, SourceError> {
-        // bioRxiv DOIs look like: 10.1101/2023.123.456789
+        // medRxiv DOIs look like: 10.1101/2023.123.456789
         let trimmed = doi.trim();
 
         if trimmed.is_empty() {
@@ -145,35 +142,35 @@ impl BiorxivSource {
     }
 
     fn pdf_url(doi: &str) -> String {
-        format!("https://www.biorxiv.org/content/{}.full.pdf", doi)
+        format!("https://www.medrxiv.org/content/{}.full.pdf", doi)
     }
 }
 
-impl Default for BiorxivSource {
+impl Default for MedrxivSource {
     fn default() -> Self {
-        Self::new().expect("Failed to create BiorxivSource")
+        Self::new().expect("Failed to create MedrxivSource")
     }
 }
 
 #[async_trait]
-impl Source for BiorxivSource {
+impl Source for MedrxivSource {
     fn id(&self) -> &str {
-        "biorxiv"
+        "medrxiv"
     }
 
     fn name(&self) -> &str {
-        BIORXIV_NAME
+        MEDRXIV_NAME
     }
 
     fn capabilities(&self) -> SourceCapabilities {
-        SourceCapabilities::SEARCH | SourceCapabilities::DOWNLOAD | SourceCapabilities::READ
+        SourceCapabilities::SEARCH | SourceCapabilities::DOWNLOAD
     }
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchResponse, SourceError> {
         let mut cursor = "0".to_string();
         let mut all_papers = Vec::new();
 
-        // bioRxiv API is cursor-based, fetch until we have enough
+        // medRxiv API is cursor-based, fetch until we have enough
         while all_papers.len() < query.max_results {
             let remaining = query.max_results - all_papers.len();
             let batch_size = remaining.clamp(10, 100);
@@ -212,7 +209,7 @@ impl Source for BiorxivSource {
 
         let papers = filtered.into_iter().take(query.max_results).collect();
 
-        Ok(SearchResponse::new(papers, BIORXIV_NAME, &query.query))
+        Ok(SearchResponse::new(papers, MEDRXIV_NAME, &query.query))
     }
 
     async fn download(&self, request: &DownloadRequest) -> Result<DownloadResult, SourceError> {
@@ -253,26 +250,9 @@ impl Source for BiorxivSource {
             bytes.len() as u64,
         ))
     }
-
-    async fn read(&self, request: &ReadRequest) -> Result<ReadResult, SourceError> {
-        let download_request = DownloadRequest::new(&request.paper_id, &request.save_path);
-        let download_result = self.download(&download_request).await?;
-
-        let pdf_path = std::path::Path::new(&download_result.path);
-        match crate::utils::extract_text(pdf_path) {
-            Ok((text, _method)) => {
-                let pages = (text.len() / 3000).max(1);
-                Ok(ReadResult::success(text).pages(pages))
-            }
-            Err(e) => Ok(ReadResult::error(format!(
-                "PDF downloaded but text extraction failed: {}",
-                e
-            ))),
-        }
-    }
 }
 
-/// API response structure for bioRxiv
+/// API response structure for medRxiv
 #[derive(Debug, Deserialize)]
 struct ApiResponse {
     #[serde(rename = "collection")]
@@ -312,17 +292,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_biorxiv_source_creation() {
-        let source = BiorxivSource::new();
+    fn test_medrxiv_source_creation() {
+        let source = MedrxivSource::new();
         assert!(source.is_ok());
     }
 
     #[test]
-    fn test_biorxiv_capabilities() {
-        let source = BiorxivSource::new().unwrap();
+    fn test_medrxiv_capabilities() {
+        let source = MedrxivSource::new().unwrap();
         let caps = source.capabilities();
         assert!(caps.contains(SourceCapabilities::SEARCH));
         assert!(caps.contains(SourceCapabilities::DOWNLOAD));
-        assert!(caps.contains(SourceCapabilities::READ));
+        assert!(!caps.contains(SourceCapabilities::READ));
     }
 }

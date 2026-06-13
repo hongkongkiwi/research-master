@@ -104,7 +104,11 @@ impl ConcurrentPaperStream {
         for source in sources {
             let query = query.clone();
             let sender = sender.clone();
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let permit = semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("semaphore never closed — this is a static Arc that lives for the function duration");
             let source = source.clone();
 
             tokio::spawn(async move {

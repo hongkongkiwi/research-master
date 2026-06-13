@@ -95,7 +95,10 @@ impl Source for CoreSource {
                         tracing::debug!("CORE API rate-limited - returning empty results");
                         return Err(SourceError::Api("CORE rate-limited".to_string()));
                     }
-                    let text = response.text().await.unwrap_or_default();
+                    let text = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Failed to read response body".to_string());
                     return Err(SourceError::Api(format!(
                         "CORE API returned status {}: {}",
                         status, text

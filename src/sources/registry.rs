@@ -15,6 +15,8 @@ use super::arxiv::ArxivSource;
 use super::base::BaseSource;
 #[cfg(feature = "source-biorxiv")]
 use super::biorxiv::BiorxivSource;
+#[cfg(feature = "source-citeseerx")]
+use super::citeseerx::CiteseerxSource;
 #[cfg(feature = "source-connected_papers")]
 use super::connected_papers::ConnectedPapersSource;
 #[cfg(feature = "source-core-repo")]
@@ -41,8 +43,14 @@ use super::ieee_xplore::IeeeXploreSource;
 use super::jstor::JstorSource;
 #[cfg(feature = "source-mdpi")]
 use super::mdpi::MdpiSource;
+#[cfg(feature = "source-medrxiv")]
+use super::medrxiv::MedrxivSource;
+#[cfg(feature = "source-openaire")]
+use super::openaire::OpenaireSource;
 #[cfg(feature = "source-openalex")]
 use super::openalex::OpenAlexSource;
+#[cfg(feature = "source-orcid")]
+use super::orcid::OrcidSource;
 #[cfg(feature = "source-osf")]
 use super::osf::OsfSource;
 #[cfg(feature = "source-pmc")]
@@ -225,11 +233,20 @@ impl SourceRegistry {
         #[cfg(feature = "source-biorxiv")]
         try_register!(BiorxivSource::new());
 
+        #[cfg(feature = "source-medrxiv")]
+        try_register!(MedrxivSource::new());
+
         #[cfg(feature = "source-semantic")]
         try_register!(SemanticScholarSource::new());
 
         #[cfg(feature = "source-openalex")]
         try_register!(OpenAlexSource::new());
+
+        #[cfg(feature = "source-openaire")]
+        try_register!(OpenaireSource::new());
+
+        #[cfg(feature = "source-orcid")]
+        try_register!(OrcidSource::new());
 
         #[cfg(feature = "source-crossref")]
         try_register!(CrossRefSource::new());
@@ -275,6 +292,9 @@ impl SourceRegistry {
 
         #[cfg(feature = "source-acm")]
         try_register!(AcmSource::new());
+
+        #[cfg(feature = "source-citeseerx")]
+        try_register!(CiteseerxSource::new());
 
         #[cfg(feature = "source-connected_papers")]
         try_register!(ConnectedPapersSource::new());
@@ -490,14 +510,19 @@ mod tests {
     #[test]
     fn test_source_filter_both_enabled_and_disabled() {
         // Test: Both ENABLE and DISABLE - enabled minus disabled (but default_disabled still applies)
-        with_source_env_vars(Some("arxiv,pubmed,semantic,dblp"), Some("dblp"), Some(""), || {
-            let config = crate::config::get_config().sources;
-            let filter = SourceFilter::from_config(&config);
-            assert!(filter.is_enabled("arxiv"));
-            assert!(filter.is_enabled("pubmed"));
-            assert!(filter.is_enabled("semantic"));
-            assert!(!filter.is_enabled("dblp")); // In enabled but also in disabled
-        });
+        with_source_env_vars(
+            Some("arxiv,pubmed,semantic,dblp"),
+            Some("dblp"),
+            Some(""),
+            || {
+                let config = crate::config::get_config().sources;
+                let filter = SourceFilter::from_config(&config);
+                assert!(filter.is_enabled("arxiv"));
+                assert!(filter.is_enabled("pubmed"));
+                assert!(filter.is_enabled("semantic"));
+                assert!(!filter.is_enabled("dblp")); // In enabled but also in disabled
+            },
+        );
     }
 
     #[test]
@@ -517,13 +542,18 @@ mod tests {
     #[test]
     fn test_source_filter_default_disabled_with_explicit_enable() {
         // Test: DEFAULT_DISABLED + ENABLE - explicitly enabled overrides default_disabled
-        with_source_env_vars(Some("biorxiv,pubmed"), None, Some("biorxiv,pmc,pubmed"), || {
-            let config = crate::config::get_config().sources;
-            let filter = SourceFilter::from_config(&config);
-            assert!(filter.is_enabled("biorxiv")); // Explicitly enabled overrides default
-            assert!(filter.is_enabled("pubmed")); // Explicitly enabled overrides default
-            assert!(!filter.is_enabled("pmc")); // In default_disabled, not explicitly enabled
-        });
+        with_source_env_vars(
+            Some("biorxiv,pubmed"),
+            None,
+            Some("biorxiv,pmc,pubmed"),
+            || {
+                let config = crate::config::get_config().sources;
+                let filter = SourceFilter::from_config(&config);
+                assert!(filter.is_enabled("biorxiv")); // Explicitly enabled overrides default
+                assert!(filter.is_enabled("pubmed")); // Explicitly enabled overrides default
+                assert!(!filter.is_enabled("pmc")); // In default_disabled, not explicitly enabled
+            },
+        );
     }
 
     #[test]

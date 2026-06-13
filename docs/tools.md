@@ -120,7 +120,47 @@ Remove duplicate papers from a list using DOI matching and title similarity.
 - Title similarity > 0.95 (Jaro-Winkler algorithm)
 - Author verification
 
-## Smart Source Selection
+- `search_by_author` (optional): Author name
+- `max_results` (optional): Maximum papers to analyze per source (default: 20)
+
+### list_sources
+
+List all available research sources with their capabilities.
+
+**Parameters:** None
+
+### batch_get_papers
+
+Look up multiple papers by their IDs/DOIs in one call.
+
+**Parameters:**
+- `paper_ids` (required): Array of paper identifiers (arXiv IDs, DOIs, PMC IDs, etc.)
+- `max_per_source` (optional): Maximum results per paper lookup (default: 3)
+
+### citation_graph
+
+Get both forward citations and backward references for a paper in a single call.
+
+**Parameters:**
+- `paper_id` (required): Paper identifier
+- `source` (optional): Specific source (default: "semantic")
+- `max_results` (optional): Maximum results for both citations and references (default: 20)
+
+### export_papers
+
+Export a list of papers in a citation format.
+
+**Parameters:**
+- `papers` (required): Array of paper objects
+- `format` (optional): Export format - "bibtex", "apa", "mla", "chicago", "csv", or "json" (default: "bibtex")
+
+### recommend_papers
+
+Get AI-powered paper recommendations similar to a given paper. Tries Semantic Scholar, Connected Papers, then OpenAlex.
+
+**Parameters:**
+- `paper_id` (required): Paper identifier to find similar papers for
+- `max_results` (optional): Maximum recommendations (default: 20)
 
 The unified tools use intelligent source auto-detection:
 

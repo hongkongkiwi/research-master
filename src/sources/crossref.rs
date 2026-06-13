@@ -123,35 +123,52 @@ impl Source for CrossRefSource {
             .await
             .unwrap_or_else(|_| "Failed to read response body".to_string());
 
-        let data: CRResponse = serde_json::from_str(&response_text)
-            .map_err(|e| {
-                let preview = response_text.chars().take(500).collect::<String>();
-                tracing::warn!("CrossRef parse error: {}", preview);
-                SourceError::Parse(format!("Failed to parse JSON: {}. Response: {}", e, preview))
-            })?;
+        let data: CRResponse = serde_json::from_str(&response_text).map_err(|e| {
+            let preview = response_text.chars().take(500).collect::<String>();
+            tracing::warn!("CrossRef parse error: {}", preview);
+            SourceError::Parse(format!(
+                "Failed to parse JSON: {}. Response: {}",
+                e, preview
+            ))
+        })?;
 
         let papers: Vec<Paper> = data
             .message
             .items
             .into_iter()
             .filter_map(|item| {
-                let title = item.get("title").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                let title = item
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
 
-                let authors = item.get("author")
+                let authors = item
+                    .get("author")
                     .and_then(|v| v.as_array())
                     .map(|authors| {
-                        authors.iter()
+                        authors
+                            .iter()
                             .filter_map(|a| a.get("given").and_then(|g| g.as_str()))
                             .collect::<Vec<_>>()
                             .join("; ")
                     })
                     .unwrap_or_default();
 
-                let doi = item.get("doi").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                let doi = item
+                    .get("doi")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
 
-                let url = item.get("url").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                let url = item
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
 
-                let published_date = item.get("published-print")
+                let published_date = item
+                    .get("published-print")
                     .and_then(|v| v.get("date-parts"))
                     .and_then(|v| v.as_array())
                     .and_then(|dates| dates.first())
@@ -197,12 +214,14 @@ impl Source for CrossRefSource {
             .await
             .unwrap_or_else(|_| "Failed to read response body".to_string());
 
-        let data: CRResponse = serde_json::from_str(&response_text)
-            .map_err(|e| {
-                let preview = response_text.chars().take(500).collect::<String>();
-                tracing::warn!("CrossRef DOI parse error: {}", preview);
-                SourceError::Parse(format!("Failed to parse JSON: {}. Response: {}", e, preview))
-            })?;
+        let data: CRResponse = serde_json::from_str(&response_text).map_err(|e| {
+            let preview = response_text.chars().take(500).collect::<String>();
+            tracing::warn!("CrossRef DOI parse error: {}", preview);
+            SourceError::Parse(format!(
+                "Failed to parse JSON: {}. Response: {}",
+                e, preview
+            ))
+        })?;
 
         let item = data
             .message
@@ -210,23 +229,38 @@ impl Source for CrossRefSource {
             .first()
             .ok_or_else(|| SourceError::NotFound("DOI not found".to_string()))?;
 
-        let title = item.get("title").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let title = item
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
 
-        let authors = item.get("author")
+        let authors = item
+            .get("author")
             .and_then(|v| v.as_array())
             .map(|authors| {
-                authors.iter()
+                authors
+                    .iter()
                     .filter_map(|a| a.get("given").and_then(|g| g.as_str()))
                     .collect::<Vec<_>>()
                     .join("; ")
             })
             .unwrap_or_default();
 
-        let doi = item.get("doi").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let doi = item
+            .get("doi")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
 
-        let url = item.get("url").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let url = item
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
 
-        let published_date = item.get("published-print")
+        let published_date = item
+            .get("published-print")
             .and_then(|v| v.get("date-parts"))
             .and_then(|v| v.as_array())
             .and_then(|dates| dates.first())
@@ -259,6 +293,7 @@ struct CRMessage {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct CRDate {
     _date: Option<String>,
 }

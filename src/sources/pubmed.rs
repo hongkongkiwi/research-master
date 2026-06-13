@@ -258,12 +258,14 @@ impl PubMedSource {
             value: String,
         }
 
-        let result: PubmedArticleSet = from_str(xml)
-            .map_err(|e| {
-                let preview = xml.chars().take(500).collect::<String>();
-                tracing::warn!("PubMed XML parse error (first 500 chars): {}", preview);
-                SourceError::Parse(format!("Failed to parse PubMed fetch XML: {}. XML preview: {}", e, preview))
-            })?;
+        let result: PubmedArticleSet = from_str(xml).map_err(|e| {
+            let preview = xml.chars().take(500).collect::<String>();
+            tracing::warn!("PubMed XML parse error (first 500 chars): {}", preview);
+            SourceError::Parse(format!(
+                "Failed to parse PubMed fetch XML: {}. XML preview: {}",
+                e, preview
+            ))
+        })?;
 
         let mut papers = Vec::new();
 
@@ -466,12 +468,16 @@ impl Source for PubMedSource {
                     let status = response.status();
                     // Handle rate limiting
                     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                        tracing::debug!("PubMed API rate-limited during fetch - returning empty results");
+                        tracing::debug!(
+                            "PubMed API rate-limited during fetch - returning empty results"
+                        );
                         return Err(SourceError::Api("PubMed rate-limited".to_string()));
                     }
                     // Check for service unavailable
                     if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
-                        tracing::debug!("PubMed API unavailable during fetch - returning empty results");
+                        tracing::debug!(
+                            "PubMed API unavailable during fetch - returning empty results"
+                        );
                         return Err(SourceError::Api("PubMed unavailable".to_string()));
                     }
                     return Err(SourceError::Api(format!(
@@ -491,7 +497,9 @@ impl Source for PubMedSource {
         // Handle rate limiting gracefully
         let papers = match Self::parse_fetch_response(&fetch_xml) {
             Ok(p) => p,
-            Err(SourceError::Api(msg)) if msg.contains("rate-limited") || msg.contains("unavailable") => {
+            Err(SourceError::Api(msg))
+                if msg.contains("rate-limited") || msg.contains("unavailable") =>
+            {
                 tracing::debug!("PubMed fetch {} - returning empty results", msg);
                 vec![]
             }
@@ -499,6 +507,16 @@ impl Source for PubMedSource {
         };
 
         Ok(SearchResponse::new(papers, "PubMed", &query.query))
+    }
+
+    async fn get_by_id(&self, id: &str) -> Result<Paper, SourceError> {
+        let query = crate::models::SearchQuery::new(id).max_results(1);
+        let response = self.search(&query).await?;
+        response
+            .papers
+            .into_iter()
+            .next()
+            .ok_or_else(|| SourceError::NotFound(format!("PubMed paper '{}' not found", id)))
     }
 }
 

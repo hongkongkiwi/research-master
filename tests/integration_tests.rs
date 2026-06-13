@@ -124,6 +124,18 @@ fn expected_source_count() -> usize {
     if cfg!(feature = "source-springer") {
         count += 1;
     }
+    if cfg!(feature = "source-citeseerx") {
+        count += 1;
+    }
+    if cfg!(feature = "source-medrxiv") {
+        count += 1;
+    }
+    if cfg!(feature = "source-openaire") {
+        count += 1;
+    }
+    if cfg!(feature = "source-orcid") {
+        count += 1;
+    }
     if cfg!(feature = "source-google_scholar") {
         count += 1;
     }

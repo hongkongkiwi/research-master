@@ -29,7 +29,10 @@ impl DimensionsSource {
         // Use 90s timeout for GraphQL queries that may take longer
         // User agent respects RESEARCH_MASTER_USER_AGENT env var
         Ok(Self {
-            client: Arc::new(HttpClient::with_timeout(&crate::utils::get_user_agent(), 90)?),
+            client: Arc::new(HttpClient::with_timeout(
+                &crate::utils::get_user_agent(),
+                90,
+            )?),
             api_key,
         })
     }

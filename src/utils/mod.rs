@@ -8,7 +8,7 @@
 //! - [`HttpClient`]: HTTP client with built-in rate limiting
 //! - [`RateLimitedRequestBuilder`]: Builder for rate-limited HTTP requests
 //! - [`extract_text`]: Extract text content from PDF files
-//! - [`is_available`]: Check if PDF extraction is available (requires poppler)
+//! - [`has_poppler`]: Check if PDF extraction is available (requires poppler)
 //! - [`PdfExtractError`]: Errors that can occur during PDF extraction
 //! - [`RetryConfig`]: Configuration for retry logic with exponential backoff
 //! - [`with_retry`]: Execute an operation with automatic retry on transient errors
@@ -40,11 +40,11 @@
 
 mod cache;
 mod circuit_breaker;
+mod cite;
 mod dedup;
 mod display;
 mod history;
 mod http;
-mod cite;
 mod pdf;
 mod progress;
 mod retry;
@@ -59,6 +59,7 @@ pub use streaming::{
 
 pub use cache::{CacheResult, CacheService, CacheStats};
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerManager, CircuitResult, CircuitState};
+pub use cite::{format_citation, get_structured_citation, CitationStyle, StructuredCitation};
 pub use dedup::{deduplicate_papers, fast_deduplicate_papers, find_duplicates, DuplicateStrategy};
 pub use display::{
     calculate_column_widths, calculate_dynamic_column_widths, format_authors, format_source,
@@ -67,7 +68,10 @@ pub use display::{
     Terminal,
 };
 pub use history::{HistoryEntry, HistoryEntryType, HistoryService};
-pub use http::{apply_cli_proxy_args, create_proxy_config_from_cli, get_user_agent, HttpClient, RateLimitedRequestBuilder, ProxyConfig, USER_AGENT_ENV_VAR};
+pub use http::{
+    apply_cli_proxy_args, create_proxy_config_from_cli, get_user_agent, HttpClient, ProxyConfig,
+    RateLimitedRequestBuilder, USER_AGENT_ENV_VAR,
+};
 pub use pdf::{
     extract_text, extract_text_simple, get_extraction_info, has_poppler, has_tesseract,
     ExtractionInfo, ExtractionMethod, PdfExtractError,
@@ -86,4 +90,3 @@ pub use update::{
 pub use validate::{
     sanitize_filename, sanitize_paper_id, validate_doi, validate_url, ValidationError,
 };
-pub use cite::{format_citation, get_structured_citation, CitationStyle, StructuredCitation};

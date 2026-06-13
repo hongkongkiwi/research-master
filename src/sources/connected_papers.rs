@@ -29,7 +29,10 @@ impl ConnectedPapersSource {
         // Use 60s timeout for potentially slow API responses
         // User agent respects RESEARCH_MASTER_USER_AGENT env var
         Ok(Self {
-            client: Arc::new(HttpClient::with_timeout(&crate::utils::get_user_agent(), 60)?),
+            client: Arc::new(HttpClient::with_timeout(
+                &crate::utils::get_user_agent(),
+                60,
+            )?),
         })
     }
 }

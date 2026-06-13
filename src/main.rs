@@ -820,8 +820,8 @@ async fn main() -> Result<()> {
     let env_filter = if cli.quiet { "error" } else { "warn" };
 
     let fmt_layer = tracing_subscriber::fmt::layer()
-        .with_level(false)  // Don't show log level
-        .with_target(false)  // Don't show target
+        .with_level(false) // Don't show log level
+        .with_target(false) // Don't show target
         .with_thread_ids(false)
         .compact();
 
@@ -923,9 +923,10 @@ async fn main() -> Result<()> {
             };
 
             // Style for progress bars
-            let spinner_style = ProgressStyle::with_template("{prefix:.bold.dim} {spinner} {wide_msg}")
-                .unwrap()
-                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
+            let spinner_style =
+                ProgressStyle::with_template("{prefix:.bold.dim} {spinner} {wide_msg}")
+                    .expect("valid progress template")
+                    .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
 
             for src in sources {
                 let src_id = src.id().to_string();
@@ -963,8 +964,9 @@ async fn main() -> Result<()> {
                                     response.papers.len(),
                                     elapsed.as_secs_f64()
                                 );
-                                let style = ProgressStyle::with_template("{prefix:.bold.dim} {msg}")
-                                    .unwrap();
+                                let style =
+                                    ProgressStyle::with_template("{prefix:.bold.dim} {msg}")
+                                        .expect("valid progress template");
                                 pb.set_style(style);
                                 pb.set_message(msg);
                                 pb.finish();
@@ -976,9 +978,20 @@ async fn main() -> Result<()> {
                                 match src.search(&search_query).await {
                                     Ok(response) => {
                                         let elapsed = start.elapsed();
-                                        cache_service.set_search(&src_id_for_handle, &search_query, &response);
-                                        let msg = format!("{} papers ({:.1}s)", response.papers.len(), elapsed.as_secs_f64());
-                                        let style = ProgressStyle::with_template("{prefix:.bold.dim} {msg}").unwrap();
+                                        cache_service.set_search(
+                                            &src_id_for_handle,
+                                            &search_query,
+                                            &response,
+                                        );
+                                        let msg = format!(
+                                            "{} papers ({:.1}s)",
+                                            response.papers.len(),
+                                            elapsed.as_secs_f64()
+                                        );
+                                        let style = ProgressStyle::with_template(
+                                            "{prefix:.bold.dim} {msg}",
+                                        )
+                                        .expect("valid progress template");
                                         pb.set_style(style);
                                         pb.set_message(msg);
                                         pb.finish();
@@ -986,8 +999,15 @@ async fn main() -> Result<()> {
                                     }
                                     Err(e) => {
                                         let elapsed = start.elapsed();
-                                        let msg = format!("error after {:.1}s: {}", elapsed.as_secs_f64(), e.to_string().lines().next().unwrap_or("unknown error"));
-                                        let style = ProgressStyle::with_template("{prefix:.bold.dim} {msg}").unwrap();
+                                        let msg = format!(
+                                            "error after {:.1}s: {}",
+                                            elapsed.as_secs_f64(),
+                                            e.to_string().lines().next().unwrap_or("unknown error")
+                                        );
+                                        let style = ProgressStyle::with_template(
+                                            "{prefix:.bold.dim} {msg}",
+                                        )
+                                        .expect("valid progress template");
                                         pb.set_style(style);
                                         pb.set_message(msg);
                                         pb.finish();
@@ -1000,9 +1020,20 @@ async fn main() -> Result<()> {
                                 match src.search(&search_query).await {
                                     Ok(response) => {
                                         let elapsed = start.elapsed();
-                                        cache_service.set_search(&src_id_for_handle, &search_query, &response);
-                                        let msg = format!("{} papers ({:.1}s)", response.papers.len(), elapsed.as_secs_f64());
-                                        let style = ProgressStyle::with_template("{prefix:.bold.dim} {msg}").unwrap();
+                                        cache_service.set_search(
+                                            &src_id_for_handle,
+                                            &search_query,
+                                            &response,
+                                        );
+                                        let msg = format!(
+                                            "{} papers ({:.1}s)",
+                                            response.papers.len(),
+                                            elapsed.as_secs_f64()
+                                        );
+                                        let style = ProgressStyle::with_template(
+                                            "{prefix:.bold.dim} {msg}",
+                                        )
+                                        .expect("valid progress template");
                                         pb.set_style(style);
                                         pb.set_message(msg);
                                         pb.finish();
@@ -1010,8 +1041,15 @@ async fn main() -> Result<()> {
                                     }
                                     Err(e) => {
                                         let elapsed = start.elapsed();
-                                        let msg = format!("error after {:.1}s: {}", elapsed.as_secs_f64(), e.to_string().lines().next().unwrap_or("unknown error"));
-                                        let style = ProgressStyle::with_template("{prefix:.bold.dim} {msg}").unwrap();
+                                        let msg = format!(
+                                            "error after {:.1}s: {}",
+                                            elapsed.as_secs_f64(),
+                                            e.to_string().lines().next().unwrap_or("unknown error")
+                                        );
+                                        let style = ProgressStyle::with_template(
+                                            "{prefix:.bold.dim} {msg}",
+                                        )
+                                        .expect("valid progress template");
                                         pb.set_style(style);
                                         pb.set_message(msg);
                                         pb.finish();
@@ -1027,11 +1065,21 @@ async fn main() -> Result<()> {
                         Ok(response) => {
                             let elapsed = start.elapsed();
                             if let Some(cache_service) = cache {
-                                cache_service.set_search(&src_id_for_handle, &search_query, &response);
+                                cache_service.set_search(
+                                    &src_id_for_handle,
+                                    &search_query,
+                                    &response,
+                                );
                             }
                             if let Some(pb) = pb {
-                                let msg = format!("{} papers ({:.1}s)", response.papers.len(), elapsed.as_secs_f64());
-                                let style = ProgressStyle::with_template("{prefix:.bold.dim} {msg}").unwrap();
+                                let msg = format!(
+                                    "{} papers ({:.1}s)",
+                                    response.papers.len(),
+                                    elapsed.as_secs_f64()
+                                );
+                                let style =
+                                    ProgressStyle::with_template("{prefix:.bold.dim} {msg}")
+                                        .expect("valid progress template");
                                 pb.set_style(style);
                                 pb.set_message(msg);
                                 pb.finish();
@@ -1041,8 +1089,14 @@ async fn main() -> Result<()> {
                         Err(e) => {
                             let elapsed = start.elapsed();
                             if let Some(pb) = pb {
-                                let msg = format!("error after {:.1}s: {}", elapsed.as_secs_f64(), e.to_string().lines().next().unwrap_or("unknown error"));
-                                let style = ProgressStyle::with_template("{prefix:.bold.dim} {msg}").unwrap();
+                                let msg = format!(
+                                    "error after {:.1}s: {}",
+                                    elapsed.as_secs_f64(),
+                                    e.to_string().lines().next().unwrap_or("unknown error")
+                                );
+                                let style =
+                                    ProgressStyle::with_template("{prefix:.bold.dim} {msg}")
+                                        .expect("valid progress template");
                                 pb.set_style(style);
                                 pb.set_message(msg);
                                 pb.finish();
@@ -1059,7 +1113,7 @@ async fn main() -> Result<()> {
             for (source_id, handle, _pb) in handles {
                 match handle.await {
                     Ok(papers) => {
-                        let mut all_papers = all_papers.lock().unwrap();
+                        let mut all_papers = all_papers.lock().expect("mutex not poisoned");
                         all_papers.extend(papers);
                     }
                     Err(e) => {
@@ -1070,12 +1124,12 @@ async fn main() -> Result<()> {
 
             // Clear the progress display
             if let Some(ref m) = mp {
-                m.clear().unwrap();
+                m.clear().expect("multi-progress clear");
             }
 
             // Get the collected papers
             let mut all_papers = {
-                let all_papers = all_papers.lock().unwrap();
+                let all_papers = all_papers.lock().expect("mutex not poisoned");
                 all_papers.clone()
             };
 
@@ -1114,9 +1168,10 @@ async fn main() -> Result<()> {
             };
 
             // Style for progress bars
-            let spinner_style = ProgressStyle::with_template("{prefix:.bold.dim} {spinner} {wide_msg}")
-                .unwrap()
-                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
+            let spinner_style =
+                ProgressStyle::with_template("{prefix:.bold.dim} {spinner} {wide_msg}")
+                    .expect("valid progress template")
+                    .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
 
             for src in sources {
                 let src_id = src.id().to_string();
@@ -1150,8 +1205,9 @@ async fn main() -> Result<()> {
                                     response.papers.len(),
                                     elapsed.as_secs_f64()
                                 );
-                                let style = ProgressStyle::with_template("{prefix:.bold.dim} {msg}")
-                                    .unwrap();
+                                let style =
+                                    ProgressStyle::with_template("{prefix:.bold.dim} {msg}")
+                                        .expect("valid progress template");
                                 pb.set_style(style);
                                 pb.set_message(msg);
                                 pb.finish();
@@ -1166,8 +1222,9 @@ async fn main() -> Result<()> {
                                     elapsed.as_secs_f64(),
                                     e.to_string().lines().next().unwrap_or("unknown error")
                                 );
-                                let style = ProgressStyle::with_template("{prefix:.bold.dim} {msg}")
-                                    .unwrap();
+                                let style =
+                                    ProgressStyle::with_template("{prefix:.bold.dim} {msg}")
+                                        .expect("valid progress template");
                                 pb.set_style(style);
                                 pb.set_message(msg);
                                 pb.finish();
@@ -1184,7 +1241,7 @@ async fn main() -> Result<()> {
             for (source_id, handle, _pb) in handles {
                 match handle.await {
                     Ok(papers) => {
-                        let mut all_papers = all_papers.lock().unwrap();
+                        let mut all_papers = all_papers.lock().expect("mutex not poisoned");
                         all_papers.extend(papers);
                     }
                     Err(e) => {
@@ -1195,12 +1252,12 @@ async fn main() -> Result<()> {
 
             // Clear the progress display
             if let Some(ref m) = mp {
-                m.clear().unwrap();
+                m.clear().expect("multi-progress clear");
             }
 
             // Get the collected papers
             let mut all_papers = {
-                let all_papers = all_papers.lock().unwrap();
+                let all_papers = all_papers.lock().expect("mutex not poisoned");
                 all_papers.clone()
             };
 
@@ -1772,9 +1829,9 @@ async fn main() -> Result<()> {
                                 let output = Command::new("tar")
                                     .args([
                                         "xzf",
-                                        archive_path.to_str().unwrap(),
+                                        archive_path.to_string_lossy().as_ref(),
                                         "-C",
-                                        temp_dir.to_str().unwrap(),
+                                        temp_dir.to_string_lossy().as_ref(),
                                     ])
                                     .output()
                                     .context("Failed to extract archive")?;
@@ -1891,7 +1948,9 @@ async fn main() -> Result<()> {
                             .join("research-master")
                             .join("config.toml");
                         println!("Creating new config at: {}", path.display());
-                        let _ = std::fs::create_dir_all(path.parent().unwrap());
+                        let _ = std::fs::create_dir_all(
+                            path.parent().unwrap_or(std::path::Path::new(".")),
+                        );
                         path
                     });
 
@@ -2231,15 +2290,16 @@ directory = "~/.cache/research-master"
             source: _,
             format,
         }) => {
-            use research_master::utils::{format_citation, get_structured_citation, CitationStyle as UtilsCitationStyle};
             use research_master::sources::Source;
+            use research_master::utils::{
+                format_citation, get_structured_citation, CitationStyle as UtilsCitationStyle,
+            };
 
             let registry = SourceRegistry::new();
 
             // Get all sources that support DOI lookup
-            let sources_vec: Vec<&Arc<dyn Source>> = registry.with_capability(
-                research_master::sources::SourceCapabilities::DOI_LOOKUP
-            );
+            let sources_vec: Vec<&Arc<dyn Source>> =
+                registry.with_capability(research_master::sources::SourceCapabilities::DOI_LOOKUP);
 
             // Try to find the paper
             let mut paper_opt = None;
@@ -2264,9 +2324,8 @@ directory = "~/.cache/research-master"
             // If not found by DOI, try search as fallback
             if paper_opt.is_none() {
                 // Get sources that support search
-                let search_sources: Vec<&Arc<dyn Source>> = registry.with_capability(
-                    research_master::sources::SourceCapabilities::SEARCH
-                );
+                let search_sources: Vec<&Arc<dyn Source>> =
+                    registry.with_capability(research_master::sources::SourceCapabilities::SEARCH);
 
                 for source in &search_sources {
                     let search_query = SearchQuery {
@@ -2292,7 +2351,8 @@ directory = "~/.cache/research-master"
                 }
             }
 
-            let paper = paper_opt.ok_or_else(|| anyhow::anyhow!("Paper not found: {}", paper_id))?;
+            let paper =
+                paper_opt.ok_or_else(|| anyhow::anyhow!("Paper not found: {}", paper_id))?;
 
             // Convert CLI CitationStyle to utils CitationStyle
             let utils_style = match style {
@@ -2309,7 +2369,10 @@ directory = "~/.cache/research-master"
                 }
                 CitationOutputFormat::Json => {
                     let structured = get_structured_citation(&paper, utils_style);
-                    println!("{}", serde_json::to_string_pretty(&structured).unwrap());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&structured).expect("serialize")
+                    );
                 }
             }
         }
@@ -2406,7 +2469,10 @@ fn output_papers(papers: &[research_master::models::Paper], format: OutputFormat
 
     match actual_format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(papers).unwrap());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(papers).expect("serialize")
+            );
         }
         OutputFormat::Plain => {
             for paper in papers {
@@ -2459,13 +2525,7 @@ fn output_papers(papers: &[research_master::models::Paper], format: OutputFormat
             ]);
 
             for paper in papers {
-                let year = format_year(
-                    paper
-                        .published_date
-                        .as_ref()
-                        .map(|d| d.as_str())
-                        .unwrap_or("?"),
-                );
+                let year = format_year(paper.published_date.as_deref().unwrap_or("?"));
 
                 let title = format_title(&paper.title, title_width);
                 let authors = format_authors(&paper.authors, authors_width);

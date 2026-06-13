@@ -53,7 +53,12 @@ impl ProxyConfig {
             self.https_proxy = https_proxy;
         }
         if let Some(no_proxy_str) = no_proxy {
-            self.no_proxy = Some(no_proxy_str.split(',').map(|s| s.trim().to_string()).collect());
+            self.no_proxy = Some(
+                no_proxy_str
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .collect(),
+            );
         }
         self
     }
@@ -96,7 +101,11 @@ pub fn create_proxy_config_from_cli(
 
 /// Apply CLI proxy arguments to environment variables
 /// This allows sources to pick up the proxy settings via their normal env var reading
-pub fn apply_cli_proxy_args(http_proxy: Option<String>, https_proxy: Option<String>, no_proxy: Option<String>) {
+pub fn apply_cli_proxy_args(
+    http_proxy: Option<String>,
+    https_proxy: Option<String>,
+    no_proxy: Option<String>,
+) {
     if let Some(http) = http_proxy {
         std::env::set_var(HTTP_PROXY_ENV_VAR, http);
     }
@@ -229,9 +238,8 @@ pub const USER_AGENT_ENV_VAR: &str = "RESEARCH_MASTER_USER_AGENT";
 
 /// Get user agent from environment or use default
 pub fn get_user_agent() -> String {
-    std::env::var(USER_AGENT_ENV_VAR).unwrap_or_else(|_| {
-        format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
-    })
+    std::env::var(USER_AGENT_ENV_VAR)
+        .unwrap_or_else(|_| format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")))
 }
 
 impl HttpClient {

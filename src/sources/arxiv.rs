@@ -294,6 +294,59 @@ impl Source for ArxivSource {
         Ok(SearchResponse::new(papers, "arXiv", &query.query))
     }
 
+    async fn get_by_id(&self, id: &str) -> Result<Paper, SourceError> {
+        let paper_id = Self::parse_id(id)?;
+        let url = format!(
+            "{}?id_list={}&max_results=1",
+            ARXIV_API_URL,
+            urlencoding::encode(&paper_id)
+        );
+
+        // Clone values needed for retry closure
+        let client = Arc::clone(&self.client);
+        let url_for_retry = url.clone();
+
+        // Execute lookup with retry logic for transient errors
+        let feed = with_retry(api_retry_config(), || {
+            let client = Arc::clone(&client);
+            let url = url_for_retry.clone();
+            async move {
+                let response = client
+                    .get(&url)
+                    .header("Accept", "application/atom+xml")
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        SourceError::Network(format!("Failed to fetch arXiv paper: {}", e))
+                    })?;
+
+                if !response.status().is_success() {
+                    return Err(SourceError::Api(format!(
+                        "arXiv API returned status: {}",
+                        response.status()
+                    )));
+                }
+
+                let bytes = response
+                    .bytes()
+                    .await
+                    .map_err(|e| SourceError::Network(format!("Failed to read response: {}", e)))?;
+
+                let feed = parser::parse(bytes.as_ref())
+                    .map_err(|e| SourceError::Parse(format!("Failed to parse Atom feed: {}", e)))?;
+
+                Ok(feed)
+            }
+        })
+        .await?;
+
+        feed.entries
+            .first()
+            .map(Self::parse_entry)
+            .transpose()?
+            .ok_or_else(|| SourceError::NotFound(format!("arXiv paper '{}' not found", id)))
+    }
+
     async fn download(&self, request: &DownloadRequest) -> Result<DownloadResult, SourceError> {
         let paper_id = Self::parse_id(&request.paper_id)?;
         let pdf_url = format!("{}/{}.pdf", ARXIV_PDF_URL, paper_id);

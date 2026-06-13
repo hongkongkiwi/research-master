@@ -47,7 +47,7 @@ quick-xml = { version = "0.37", features = ["serialize"] }
 feed-rs = "2.1"
 
 # HTML parsing
-scraper = "0.21"
+scraper = "0.27"
 
 # URL handling
 url = "2.5"
@@ -87,15 +87,14 @@ unicode-width = "0.1"
 
 # Modern CLI UI
 owo-colors = "4"
-indicatif = "0.17"
-tabled = "0.20"
+indicatif = "0.18"
 
 # PDF extraction (poppler for best results, lopdf as fallback)
 pdf-extract = "0.7"
 lopdf = "0.34"
 
 # Rate limiting
-governor = "0.6"
+governor = "0.10"
 nonzero_ext = "0.3"
 
 # Async streaming
@@ -141,6 +140,10 @@ mdpi = ["source-mdpi"]
 jstor = ["source-jstor"]
 scispace = ["source-scispace"]
 acm = ["source-acm"]
+citeseerx = ["source-citeseerx"]
+medrxiv = ["source-medrxiv"]
+openaire = ["source-openaire"]
+orcid = ["source-orcid"]
 connected_papers = ["source-connected_papers"]
 doaj = ["source-doaj"]
 worldwidescience = ["source-worldwidescience"]
@@ -171,6 +174,10 @@ source-mdpi = []
 source-jstor = []
 source-scispace = []
 source-acm = []
+source-citeseerx = []
+source-medrxiv = []
+source-openaire = []
+source-orcid = []
 source-connected_papers = []
 source-doaj = []
 source-worldwidescience = []
@@ -201,6 +208,10 @@ default = [
   "source-jstor",
   "source-scispace",
   "source-acm",
+  "source-citeseerx",
+  "source-medrxiv",
+  "source-openaire",
+  "source-orcid",
   "source-connected_papers",
   "source-doaj",
   "source-worldwidescience",
@@ -212,13 +223,12 @@ default = [
 
 # Convenience feature groups
 core = ["source-arxiv", "source-pubmed", "source-semantic"]
-preprints = ["source-arxiv", "source-biorxiv"]
+preprints = ["source-arxiv", "source-biorxiv", "source-medrxiv"]
 full = ["default"]
 
 [dev-dependencies]
 tokio-test = "0.4"
-mockito = "1.5"
-cargo-dist = "0.22"
+mockito = "1.7"
 
 # RPM package configuration
 [package.metadata.rpm]

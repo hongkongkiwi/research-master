@@ -302,9 +302,9 @@ fn extract_tar_gz(archive_path: &Path, dest_dir: &Path) -> Result<PathBuf> {
     let output = Command::new("tar")
         .args([
             "xzf",
-            archive_path.to_str().unwrap(),
+            archive_path.to_string_lossy().as_ref(),
             "-C",
-            dest_dir.to_str().unwrap(),
+            dest_dir.to_string_lossy().as_ref(),
         ])
         .output()
         .context("Failed to extract tar.gz")?;
@@ -394,7 +394,10 @@ pub fn replace_binary(current: &Path, new: &Path) -> Result<()> {
         // because the current binary is still running
         let temp_path = current.with_file_name(format!(
             "{}.new",
-            current.file_name().unwrap().to_string_lossy()
+            current
+                .file_name()
+                .unwrap_or(std::ffi::OsStr::new("binary"))
+                .to_string_lossy()
         ));
 
         // Copy new binary to temp location
@@ -405,7 +408,10 @@ pub fn replace_binary(current: &Path, new: &Path) -> Result<()> {
         // First, rename current to backup
         let backup_path = current.with_file_name(format!(
             "{}.backup",
-            current.file_name().unwrap().to_string_lossy()
+            current
+                .file_name()
+                .unwrap_or(std::ffi::OsStr::new("binary"))
+                .to_string_lossy()
         ));
         if current.exists() {
             fs::rename(current, &backup_path)?;
@@ -567,8 +573,8 @@ pub fn verify_gpg_signature(sha256sums_path: &Path, signature: &str) -> Result<b
     let output = Command::new("gpg")
         .args([
             "--verify",
-            sig_path.to_str().unwrap(),
-            sha256sums_path.to_str().unwrap(),
+            sig_path.to_string_lossy().as_ref(),
+            sha256sums_path.to_string_lossy().as_ref(),
         ])
         .output()
         .context("Failed to run gpg")?;

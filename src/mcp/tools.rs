@@ -8,9 +8,11 @@ use serde_json::Value;
 use crate::sources::SourceRegistry;
 
 pub use super::unified_tools::{
-    DeduplicatePapersHandler, DownloadPaperHandler, GetCitationsHandler, GetPaperHandler,
-    GetReferencesHandler, LookupByDoiHandler, ReadPaperHandler, SearchByAuthorHandler,
-    SearchPapersHandler,
+    AuthorProfileHandler, BatchGetPapersHandler, CitationGraphHandler, DeduplicatePapersHandler,
+    DownloadPaperHandler, ExportPapersHandler, GetCitationsHandler, GetPaperHandler,
+    GetReferencesHandler, GetRelatedPapersHandler, ListSourcesHandler, LookupByDoiHandler,
+    ReadPaperHandler, RecommendPapersHandler, SearchByAuthorHandler, SearchPapersHandler,
+    WebSearchHandler, WritePaperHandler,
 };
 
 /// An MCP tool that can be called by the client
@@ -329,6 +331,225 @@ impl ToolRegistry {
                 "required": ["papers"]
             }),
             handler: Arc::new(DeduplicatePapersHandler),
+        });
+
+        // 10. get_related_papers - Get related/similar papers
+        self.register(Tool {
+            name: "get_related_papers".to_string(),
+            description: "Get papers related or similar to a specific paper. Source auto-detected from paper ID format.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "paper_id": {
+                        "type": "string",
+                        "description": "Paper identifier"
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Override auto-detection and use specific source"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum results",
+                        "default": 20
+                    }
+                },
+                "required": ["paper_id"]
+            }),
+            handler: Arc::new(GetRelatedPapersHandler {
+                sources: sources.clone(),
+            }),
+        });
+
+        // 11. list_sources - List available sources with capabilities
+        self.register(Tool {
+            name: "list_sources".to_string(),
+            description: format!(
+                "List all {} available research sources with their capabilities (search, download, citations, etc.)",
+                sources_count
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+            handler: Arc::new(ListSourcesHandler {
+                sources: sources.clone(),
+            }),
+        });
+
+        // 12. author_profile - Get author profile with publication stats
+        self.register(Tool {
+            name: "author_profile".to_string(),
+            description: "Get an author's publication profile including paper counts, most cited works, and publication history across sources.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "author": {
+                        "type": "string",
+                        "description": "Author name"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum papers to analyze per source",
+                        "default": 20
+                    }
+                },
+                "required": ["author"]
+            }),
+            handler: Arc::new(AuthorProfileHandler {
+                sources: sources.clone(),
+            }),
+        });
+
+        // 13. batch_get_papers - Batch lookup multiple papers
+        self.register(Tool {
+            name: "batch_get_papers".to_string(),
+            description: "Look up multiple papers by their IDs/DOIs in one call. Returns metadata for each with auto-detected sources.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "paper_ids": {
+                        "type": "array",
+                        "description": "Array of paper identifiers (arXiv IDs, DOIs, PMC IDs, etc.)",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "max_per_source": {
+                        "type": "integer",
+                        "description": "Maximum results per paper lookup",
+                        "default": 3
+                    }
+                },
+                "required": ["paper_ids"]
+            }),
+            handler: Arc::new(BatchGetPapersHandler {
+                sources: sources.clone(),
+            }),
+        });
+
+        // 14. citation_graph - Get combined citation graph
+        self.register(Tool {
+            name: "citation_graph".to_string(),
+            description: "Get both forward citations and backward references for a paper in a single call. Prefers Semantic Scholar.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "paper_id": {
+                        "type": "string",
+                        "description": "Paper identifier"
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Specific source (default: 'semantic')"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum results for both citations and references",
+                        "default": 20
+                    }
+                },
+                "required": ["paper_id"]
+            }),
+            handler: Arc::new(CitationGraphHandler {
+                sources: sources.clone(),
+            }),
+        });
+
+        // 15. export_papers - Export papers in citation format
+        self.register(Tool {
+            name: "export_papers".to_string(),
+            description: "Export a list of papers in a citation format (bibtex, apa, mla, chicago, csv, json).".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "papers": {
+                        "type": "array",
+                        "description": "Array of paper objects to export",
+                        "items": {
+                            "type": "object"
+                        }
+                    },
+                    "format": {
+                        "type": "string",
+                        "description": "Export format: 'bibtex', 'apa', 'mla', 'chicago', 'csv', or 'json'",
+                        "default": "bibtex"
+                    }
+                },
+                "required": ["papers"]
+            }),
+            handler: Arc::new(ExportPapersHandler {
+                sources: sources.clone(),
+            }),
+        });
+
+        // 16. recommend_papers - AI paper recommendations
+        self.register(Tool {
+            name: "recommend_papers".to_string(),
+            description: "Get AI-powered paper recommendations similar to a given paper. Tries Semantic Scholar, Connected Papers, then OpenAlex.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "paper_id": {
+                        "type": "string",
+                        "description": "Paper identifier to find similar papers for"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum recommendations",
+                        "default": 20
+                    }
+                },
+                "required": ["paper_id"]
+            }),
+            handler: Arc::new(RecommendPapersHandler {
+                sources: sources.clone(),
+            }),
+        });
+
+        // 17. write_paper - Save papers to local library
+        self.register(Tool {
+            name: "write_paper".to_string(),
+            description: "Save paper metadata to a local JSON library file for later reference. Supports adding notes.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "papers": {
+                        "type": "array",
+                        "description": "Array of paper objects to save",
+                        "items": {"type": "object"}
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional notes to attach to saved papers",
+                        "default": ""
+                    }
+                },
+                "required": ["papers"]
+            }),
+            handler: Arc::new(WritePaperHandler),
+        });
+
+        // 18. web_search - General web search
+        self.register(Tool {
+            name: "web_search".to_string(),
+            description: "Search the general web for information. Used as a fallback when paper sources don't have enough results. Requires EXA_API_KEY environment variable.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum results",
+                        "default": 5
+                    }
+                },
+                "required": ["query"]
+            }),
+            handler: Arc::new(WebSearchHandler),
         });
     }
 

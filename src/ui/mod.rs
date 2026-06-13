@@ -213,11 +213,9 @@ pub fn print_search_header(query: &str, count: usize, duration: Duration) {
 
 /// Print download progress.
 pub fn print_download_progress(paper_id: &str, source: &str, progress: u64, total: u64) {
-    let percentage = if total > 0 {
-        (progress * 100 / total) as f64
-    } else {
-        0.0
-    };
+    let percentage = total
+        .checked_div(100)
+        .map_or(0.0, |_| (progress * 100 / total) as f64);
 
     print!(
         "\r{} Downloading {} from {}: {:.1}%",
@@ -325,7 +323,7 @@ impl MultiSourceSpinner {
             indicatif::ProgressStyle::with_template(
                 "{msg}\n{spinner:.cyan} {wide_bar:.cyan/blue} {pos}/{len}",
             )
-            .unwrap()
+            .expect("valid progress template")
             .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
             .progress_chars("█   "),
         );
@@ -369,7 +367,7 @@ impl MultiSourceSpinner {
     pub fn finish_with_success(&self, total_results: usize) {
         self.spinner.set_style(
             indicatif::ProgressStyle::with_template("{spinner:.green} {msg}")
-                .unwrap()
+                .expect("valid progress template")
                 .tick_chars("✓"),
         );
         self.spinner
@@ -380,7 +378,7 @@ impl MultiSourceSpinner {
     pub fn finish_with_error(&self, msg: &str) {
         self.spinner.set_style(
             indicatif::ProgressStyle::with_template("{spinner:.red} {msg}")
-                .unwrap()
+                .expect("valid progress template")
                 .tick_chars("✗"),
         );
         self.spinner.finish_with_message(format!("✗ {}", msg));
@@ -398,7 +396,7 @@ impl ScientificSpinner {
         let pb = indicatif::ProgressBar::new_spinner();
         pb.set_style(
             indicatif::ProgressStyle::with_template("{spinner} {msg}")
-                .unwrap()
+                .expect("valid progress template")
                 .tick_chars("🔬 ⚗️ 🧪 🧫 🔭 📡 🧬 ⚛️ "),
         );
         pb.set_message(msg.to_string());
@@ -414,7 +412,9 @@ impl ScientificSpinner {
 
     /// Update to a sub-operation
     pub fn update(&self, current: usize, total: usize) {
-        let percent = if total > 0 { (current * 100 / total).min(100) } else { 0 };
+        let percent = total
+            .checked_div(1)
+            .map_or(0, |_| (current * 100 / total).min(100));
         let msg = format!("({}/{}) {}%", current, total, percent);
         self.pb.set_message(msg);
     }
@@ -423,7 +423,7 @@ impl ScientificSpinner {
     pub fn finish_with_success(&self, msg: &str) {
         self.pb.set_style(
             indicatif::ProgressStyle::with_template("{spinner:.green} {msg}")
-                .unwrap()
+                .expect("valid progress template")
                 .tick_chars("✓"),
         );
         self.pb.finish_with_message(msg.to_string());
@@ -433,7 +433,7 @@ impl ScientificSpinner {
     pub fn finish_with_error(&self, msg: &str) {
         self.pb.set_style(
             indicatif::ProgressStyle::with_template("{spinner:.red} {msg}")
-                .unwrap()
+                .expect("valid progress template")
                 .tick_chars("✗"),
         );
         self.pb.finish_with_message(msg.to_string());
@@ -456,7 +456,7 @@ impl Spinner {
         let pb = indicatif::ProgressBar::new_spinner();
         pb.set_style(
             indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg}")
-                .unwrap()
+                .expect("valid progress template")
                 .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
         );
         pb.set_message(msg.to_string());
@@ -474,7 +474,7 @@ impl Spinner {
     pub fn finish_with_success(&self, msg: &str) {
         self.pb.set_style(
             indicatif::ProgressStyle::with_template("{spinner:.green} {msg}")
-                .unwrap()
+                .expect("valid progress template")
                 .tick_chars("✓ ✗ "),
         );
         self.pb.finish_with_message(msg.to_string());
@@ -484,7 +484,7 @@ impl Spinner {
     pub fn finish_with_error(&self, msg: &str) {
         self.pb.set_style(
             indicatif::ProgressStyle::with_template("{spinner:.red} {msg}")
-                .unwrap()
+                .expect("valid progress template")
                 .tick_chars("✓ ✗ "),
         );
         self.pb.finish_with_message(msg.to_string());
@@ -518,7 +518,7 @@ pub fn create_progress_bar(len: u64, msg: &str) -> Spinner {
         indicatif::ProgressStyle::with_template(
             "{msg}: {bar:40.cyan/blue} {pos}/{len} ({percent}%)",
         )
-        .unwrap()
+        .expect("valid progress template")
         .progress_chars("█▓▒░ "),
     );
     pb.set_message(msg.to_string());

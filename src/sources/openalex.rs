@@ -451,38 +451,29 @@ impl Source for OpenAlexSource {
             .await
             .map_err(|e| SourceError::Parse(format!("Failed to parse JSON: {}", e)))?;
 
-        // Parse WorkResponse (same structure as OAPaper)
-        let authors = data
-            .authorships
-            .iter()
-            .filter_map(|a| a.author.display_name.as_ref())
-            .map(|s| s.as_str())
-            .collect::<Vec<_>>()
-            .join("; ");
+        Ok(Self::parse_paper(&data))
+    }
 
-        let published_date = data.publication_year.as_ref().map(|y| y.to_string());
-        let doi_value = data.doi.clone().unwrap_or_default();
-        let url = data.id.clone().unwrap_or_default();
-        let paper_id = data
-            .id
-            .clone()
-            .unwrap_or_else(|| format!("OpenAlex:{}", doi_value));
-        let pdf_url = data
-            .best_open_access_pdf
-            .as_ref()
-            .and_then(|p| p.url.clone())
-            .unwrap_or_default();
+    async fn get_by_id(&self, id: &str) -> Result<Paper, SourceError> {
+        let url = format!("/works/{}", urlencoding::encode(id));
 
-        Ok(
-            PaperBuilder::new(paper_id, data.title.clone(), url, SourceType::OpenAlex)
-                .authors(authors)
-                .abstract_text(data.r#abstract.clone().unwrap_or_default())
-                .doi(doi_value)
-                .published_date(published_date.unwrap_or_default())
-                .pdf_url(pdf_url)
-                .citations(data.cited_by_count.unwrap_or(0) as u32)
-                .build(),
-        )
+        let response = self
+            .client
+            .get(&self.build_url(&url))
+            .send()
+            .await
+            .map_err(|e| SourceError::Network(format!("Failed to fetch paper: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(SourceError::NotFound(format!("Paper '{}' not found", id)));
+        }
+
+        let data: WorkResponse = response
+            .json()
+            .await
+            .map_err(|e| SourceError::Parse(format!("Failed to parse JSON: {}", e)))?;
+
+        Ok(Self::parse_paper(&data))
     }
 }
 
@@ -528,18 +519,7 @@ struct Meta {
     count: usize,
 }
 
-#[derive(Debug, Deserialize)]
-struct WorkResponse {
-    id: Option<String>,
-    title: String,
-    publication_year: Option<i32>,
-    #[serde(rename = "cited_by_count")]
-    cited_by_count: Option<i32>,
-    doi: Option<String>,
-    r#abstract: Option<String>,
-    best_open_access_pdf: Option<OAPdf>,
-    authorships: Vec<OAAuthorship>,
-}
+type WorkResponse = OAPaper;
 
 #[derive(Debug, Deserialize)]
 struct AuthorsResponse {
