@@ -577,3 +577,161 @@ impl ToolRegistry {
         tool.handler.execute(args).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sources::{MockSource, SourceRegistry};
+    use serde_json::json;
+
+    #[derive(Debug)]
+    struct NoopHandler;
+
+    #[async_trait::async_trait]
+    impl ToolHandler for NoopHandler {
+        async fn execute(&self, _args: Value) -> Result<Value, String> {
+            Ok(json!({"ok": true}))
+        }
+    }
+
+    fn source_registry_with_mock() -> SourceRegistry {
+        let mut registry = SourceRegistry::empty_for_tests();
+        registry.register(Arc::new(MockSource::new()));
+        registry
+    }
+
+    fn tool_registry() -> ToolRegistry {
+        ToolRegistry::from_sources(&source_registry_with_mock())
+    }
+
+    fn required_fields(tool: &Tool) -> Vec<&str> {
+        tool.input_schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .map(|values| values.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn test_tool_struct_creation() {
+        let input_schema = json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"}
+            },
+            "required": ["query"]
+        });
+
+        let tool = Tool {
+            name: "test_tool".to_string(),
+            description: "A test tool".to_string(),
+            input_schema: input_schema.clone(),
+            handler: Arc::new(NoopHandler),
+        };
+
+        assert_eq!(tool.name, "test_tool");
+        assert_eq!(tool.description, "A test tool");
+        assert_eq!(tool.input_schema, input_schema);
+    }
+
+    #[test]
+    fn test_tool_registry_creation_from_sources() {
+        let registry = tool_registry();
+
+        assert!(!registry.all().is_empty());
+        assert!(registry.get("search_papers").is_some());
+        assert!(registry.get("list_sources").is_some());
+    }
+
+    #[test]
+    fn test_tool_registry_all_returns_all_registered_tools() {
+        let registry = tool_registry();
+        let tools = registry.all();
+        let names: std::collections::HashSet<&str> =
+            tools.iter().map(|tool| tool.name.as_str()).collect();
+
+        assert_eq!(tools.len(), 18);
+        for expected in [
+            "search_papers",
+            "search_by_author",
+            "get_paper",
+            "download_paper",
+            "read_paper",
+            "get_citations",
+            "get_references",
+            "lookup_by_doi",
+            "deduplicate_papers",
+            "get_related_papers",
+            "list_sources",
+            "author_profile",
+            "batch_get_papers",
+            "citation_graph",
+            "export_papers",
+            "recommend_papers",
+            "write_paper",
+            "web_search",
+        ] {
+            assert!(names.contains(expected), "missing tool {expected}");
+        }
+    }
+
+    #[test]
+    fn test_tool_registry_get_by_name() {
+        let registry = tool_registry();
+
+        let search = registry.get("search_papers").expect("search_papers tool");
+        assert_eq!(search.name, "search_papers");
+        assert!(registry.get("not_a_tool").is_none());
+    }
+
+    #[test]
+    fn test_each_tool_schema_has_valid_required_parameters() {
+        let registry = tool_registry();
+
+        for tool in registry.all() {
+            let schema = &tool.input_schema;
+            assert_eq!(schema.get("type").and_then(|v| v.as_str()), Some("object"));
+            let properties = schema
+                .get("properties")
+                .and_then(|v| v.as_object())
+                .expect("tool schema should define properties");
+
+            for required in required_fields(tool) {
+                assert!(
+                    properties.contains_key(required),
+                    "required field {required} for {} must be defined in properties",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_search_papers_schema_requires_query() {
+        let registry = tool_registry();
+        let search = registry.get("search_papers").expect("search_papers tool");
+
+        assert_eq!(required_fields(search), vec!["query"]);
+        assert!(search.input_schema["properties"].get("query").is_some());
+    }
+
+    #[test]
+    fn test_list_sources_schema_has_no_required_params() {
+        let registry = tool_registry();
+        let list_sources = registry.get("list_sources").expect("list_sources tool");
+
+        assert!(required_fields(list_sources).is_empty());
+        assert!(list_sources.input_schema.get("required").is_none());
+    }
+
+    #[test]
+    fn test_download_paper_schema_requires_paper_id() {
+        let registry = tool_registry();
+        let download = registry.get("download_paper").expect("download_paper tool");
+
+        assert_eq!(required_fields(download), vec!["paper_id"]);
+        assert!(download.input_schema["properties"]
+            .get("paper_id")
+            .is_some());
+    }
+}

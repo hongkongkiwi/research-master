@@ -219,17 +219,96 @@ impl CiteseerxDocument {
 mod tests {
     use super::*;
 
+    fn mock_json() -> &'static str {
+        r#"{
+            "response": {
+                "numFound": 1,
+                "docs": [{
+                    "id": "csx-1",
+                    "title": "Mock Paper Title",
+                    "authors": ["Ada Lovelace", "Alan Turing"],
+                    "abstract": "Mock abstract text.",
+                    "doi": "10.1234/mock",
+                    "year": 2024,
+                    "url": "https://citeseerx.ist.psu.edu/document?doi=10.1234/mock",
+                    "venue": "MockConf"
+                }]
+            }
+        }"#
+    }
+
     #[test]
     fn test_source_creation() {
         let source = CiteseerxSource::new();
         assert!(source.is_ok());
+    }
 
-        let source = source.unwrap();
+    #[test]
+    fn test_source_metadata() {
+        let source = CiteseerxSource::new().unwrap();
         assert_eq!(source.id(), "citeseerx");
         assert_eq!(source.name(), "CiteSeerX");
-        assert!(source.capabilities().contains(SourceCapabilities::SEARCH));
-        assert!(source
-            .capabilities()
-            .contains(SourceCapabilities::DOI_LOOKUP));
+    }
+
+    #[test]
+    fn test_capabilities() {
+        let source = CiteseerxSource::new().unwrap();
+        let caps = source.capabilities();
+        assert!(caps.contains(SourceCapabilities::SEARCH));
+        assert!(caps.contains(SourceCapabilities::DOI_LOOKUP));
+        assert_eq!(
+            caps,
+            SourceCapabilities::SEARCH | SourceCapabilities::DOI_LOOKUP
+        );
+    }
+
+    #[test]
+    fn test_response_parsing_from_mock_json() {
+        let response: CiteseerxResponse = serde_json::from_str(mock_json()).unwrap();
+        assert_eq!(response.response.num_found, Some(1));
+        assert_eq!(response.response.docs.len(), 1);
+        assert_eq!(response.response.docs[0].year_as_string(), "2024");
+    }
+
+    #[test]
+    fn test_parse_document_maps_response_fields() {
+        let source = CiteseerxSource::new().unwrap();
+        let response: CiteseerxResponse = serde_json::from_str(mock_json()).unwrap();
+        let paper = source.parse_document(&response.response.docs[0]);
+        assert_eq!(paper.paper_id, "csx-1");
+        assert_eq!(paper.title, "Mock Paper Title");
+        assert_eq!(paper.authors, "Ada Lovelace; Alan Turing");
+        assert_eq!(paper.r#abstract, "Mock abstract text.");
+        assert_eq!(paper.doi.as_deref(), Some("10.1234/mock"));
+        assert_eq!(paper.published_date.as_deref(), Some("2024"));
+        assert_eq!(paper.categories.as_deref(), Some("MockConf"));
+        assert_eq!(paper.source, crate::models::SourceType::CiteSeerX);
+    }
+
+    #[test]
+    fn test_year_as_string_handles_string_number_and_missing_values() {
+        let doc_with_string_year = CiteseerxDocument {
+            id: None,
+            title: None,
+            authors: None,
+            r#abstract: None,
+            doi: None,
+            year: Some(serde_json::json!("2023")),
+            url: None,
+            venue: None,
+        };
+        assert_eq!(doc_with_string_year.year_as_string(), "2023");
+
+        let doc_with_number_year = CiteseerxDocument {
+            year: Some(serde_json::json!(2024)),
+            ..doc_with_string_year
+        };
+        assert_eq!(doc_with_number_year.year_as_string(), "2024");
+
+        let doc_without_year = CiteseerxDocument {
+            year: None,
+            ..doc_with_number_year
+        };
+        assert_eq!(doc_without_year.year_as_string(), "");
     }
 }

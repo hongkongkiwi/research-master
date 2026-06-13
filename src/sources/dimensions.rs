@@ -353,9 +353,85 @@ struct DimensionsRelatedWork {
 mod tests {
     use super::*;
 
+    fn mock_json() -> &'static str {
+        r#"{
+            "data": {
+                "search": [{
+                    "id": "dim-1",
+                    "title": "Mock Paper Title",
+                    "abstract": "Mock abstract text.",
+                    "authors": [{"first_name": "Ada", "last_name": "Lovelace"}, {"first_name": "Alan", "last_name": "Turing"}],
+                    "publication_year": 2024,
+                    "journal": {"title": "Mock Journal"},
+                    "doi": "10.1234/mock",
+                    "type": "article",
+                    "concepts": [{"name": "Computer science"}],
+                    "related_works": [{"doi": "10.1234/related", "title": "Related"}]
+                }],
+                "papers": [{
+                    "id": "dim-1",
+                    "title": "Mock Paper Title",
+                    "abstract": "Mock abstract text.",
+                    "authors": [{"first_name": "Ada", "last_name": "Lovelace"}, {"first_name": "Alan", "last_name": "Turing"}],
+                    "publication_year": 2024,
+                    "journal": {"title": "Mock Journal"},
+                    "doi": "10.1234/mock",
+                    "type": "article",
+                    "concepts": [{"name": "Computer science"}],
+                    "related_works": []
+                }]
+            }
+        }"#
+    }
+
     #[test]
     fn test_source_creation() {
         let source = DimensionsSource::new();
         assert!(source.is_ok());
+    }
+
+    #[test]
+    fn test_source_metadata() {
+        let source = DimensionsSource::new().unwrap();
+        assert_eq!(source.id(), "dimensions");
+        assert_eq!(source.name(), "Dimensions");
+    }
+
+    #[test]
+    fn test_capabilities() {
+        let source = DimensionsSource::new().unwrap();
+        let caps = source.capabilities();
+        assert!(caps.contains(SourceCapabilities::SEARCH));
+        assert!(caps.contains(SourceCapabilities::CITATIONS));
+        assert!(caps.contains(SourceCapabilities::DOI_LOOKUP));
+        assert_eq!(
+            caps,
+            SourceCapabilities::SEARCH
+                | SourceCapabilities::CITATIONS
+                | SourceCapabilities::DOI_LOOKUP
+        );
+    }
+
+    #[test]
+    fn test_response_parsing_from_mock_json() {
+        let response: DimensionsResponse = serde_json::from_str(mock_json()).unwrap();
+        assert_eq!(response.data.search.len(), 1);
+        assert_eq!(response.data.papers.len(), 1);
+        assert_eq!(response.data.search[0].concepts[0].name, "Computer science");
+    }
+
+    #[test]
+    fn test_parse_result_maps_response_fields() {
+        let source = DimensionsSource::new().unwrap();
+        let response: DimensionsResponse = serde_json::from_str(mock_json()).unwrap();
+        let paper = source.parse_result(&response.data.search[0]).unwrap();
+        assert_eq!(paper.paper_id, "dim-1");
+        assert_eq!(paper.title, "Mock Paper Title");
+        assert_eq!(paper.authors, "Ada Lovelace; Alan Turing");
+        assert_eq!(paper.r#abstract, "Mock abstract text.");
+        assert_eq!(paper.doi.as_deref(), Some("10.1234/mock"));
+        assert_eq!(paper.url, "https://doi.org/10.1234/mock");
+        assert_eq!(paper.published_date.as_deref(), Some("2024"));
+        assert_eq!(paper.source, crate::models::SourceType::Dimensions);
     }
 }

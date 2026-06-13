@@ -336,6 +336,14 @@ impl SourceRegistry {
         self.sources.insert(source.id().to_string(), source);
     }
 
+    /// Create an empty registry for tests.
+    #[cfg(test)]
+    pub(crate) fn empty_for_tests() -> Self {
+        Self {
+            sources: HashMap::new(),
+        }
+    }
+
     /// Get a source by ID
     pub fn get(&self, id: &str) -> Option<&Arc<dyn Source>> {
         self.sources.get(id)

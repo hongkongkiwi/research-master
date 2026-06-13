@@ -302,9 +302,82 @@ struct ZenodoLinks {
 mod tests {
     use super::*;
 
+    fn mock_json_with_struct_total() -> &'static str {
+        r#"{
+            "hits": {
+                "total": {"value": 1},
+                "hits": [{
+                    "id": 12345,
+                    "metadata": {
+                        "title": "Mock Paper Title",
+                        "description": "Mock abstract text.",
+                        "doi": "10.1234/mock",
+                        "publication_date": "2024-06-01",
+                        "creators": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}]
+                    },
+                    "links": {"html": "https://zenodo.org/records/12345"}
+                }]
+            }
+        }"#
+    }
+
     #[test]
     fn test_source_creation() {
         let source = ZenodoSource::new();
         assert!(source.is_ok());
+    }
+
+    #[test]
+    fn test_source_metadata() {
+        let source = ZenodoSource::new().unwrap();
+        assert_eq!(source.id(), "zenodo");
+        assert_eq!(source.name(), "Zenodo");
+    }
+
+    #[test]
+    fn test_capabilities() {
+        let source = ZenodoSource::new().unwrap();
+        let caps = source.capabilities();
+        assert!(caps.contains(SourceCapabilities::SEARCH));
+        assert!(caps.contains(SourceCapabilities::DOI_LOOKUP));
+        assert_eq!(
+            caps,
+            SourceCapabilities::SEARCH | SourceCapabilities::DOI_LOOKUP
+        );
+    }
+
+    #[test]
+    fn test_response_parsing_from_mock_json() {
+        let response: ZenodoResponse = serde_json::from_str(mock_json_with_struct_total()).unwrap();
+        match response.hits.total {
+            ZenodoTotal::Struct { value } => assert_eq!(value, 1),
+            ZenodoTotal::Integer(value) => panic!("expected struct total, got {value}"),
+        }
+        assert_eq!(response.hits.hits.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_result_maps_response_fields() {
+        let source = ZenodoSource::new().unwrap();
+        let response: ZenodoResponse = serde_json::from_str(mock_json_with_struct_total()).unwrap();
+        let paper = source.parse_result(&response.hits.hits[0]).unwrap();
+        assert_eq!(paper.paper_id, "12345");
+        assert_eq!(paper.title, "Mock Paper Title");
+        assert_eq!(paper.authors, "Ada Lovelace; Alan Turing");
+        assert_eq!(paper.r#abstract, "Mock abstract text.");
+        assert_eq!(paper.doi.as_deref(), Some("10.1234/mock"));
+        assert_eq!(paper.url, "https://zenodo.org/records/12345");
+        assert_eq!(paper.published_date.as_deref(), Some("2024-06-01"));
+        assert_eq!(paper.source.id(), "zenodo");
+    }
+
+    #[test]
+    fn test_zenodo_total_parses_integer_variant() {
+        let json = r#"{"hits": {"total": 2, "hits": []}}"#;
+        let response: ZenodoResponse = serde_json::from_str(json).unwrap();
+        match response.hits.total {
+            ZenodoTotal::Integer(value) => assert_eq!(value, 2),
+            ZenodoTotal::Struct { value } => panic!("expected integer total, got {value}"),
+        }
     }
 }

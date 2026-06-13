@@ -177,4 +177,65 @@ mod tests {
         let source = UnpaywallSource::new();
         assert!(source.is_ok());
     }
+
+    #[test]
+    fn test_source_metadata() {
+        let source = UnpaywallSource::new().unwrap();
+        assert_eq!(source.id(), "unpaywall");
+        assert_eq!(source.name(), "Unpaywall");
+    }
+
+    #[test]
+    fn test_capabilities() {
+        let source = UnpaywallSource::new().unwrap();
+        let caps = source.capabilities();
+        assert!(caps.contains(SourceCapabilities::DOI_LOOKUP));
+        assert_eq!(caps, SourceCapabilities::DOI_LOOKUP);
+    }
+
+    #[test]
+    fn test_response_parsing_from_mock_json() {
+        let json = r#"{
+            "title": "Mock Paper Title",
+            "abstract": "Mock abstract text.",
+            "published_date": "2024-04-01",
+            "authors": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}],
+            "best_oa_location": {"url_for_pdf": "https://example.org/mock.pdf"}
+        }"#;
+        let response: UnpaywallResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.title.as_deref(), Some("Mock Paper Title"));
+        assert_eq!(response.authors.len(), 2);
+        assert_eq!(
+            response
+                .best_oa_location
+                .as_ref()
+                .and_then(|loc| loc.url_for_pdf.as_deref()),
+            Some("https://example.org/mock.pdf")
+        );
+    }
+
+    #[test]
+    fn test_parse_result_maps_response_fields() {
+        let source = UnpaywallSource::new().unwrap();
+        let json = r#"{
+            "title": "Mock Paper Title",
+            "abstract": "Mock abstract text.",
+            "published_date": "2024-04-01",
+            "authors": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}],
+            "best_oa_location": {"url_for_pdf": "https://example.org/mock.pdf"}
+        }"#;
+        let response: UnpaywallResponse = serde_json::from_str(json).unwrap();
+        let paper = source.parse_result(&response, "10.1234/mock").unwrap();
+        assert_eq!(paper.paper_id, "10.1234/mock");
+        assert_eq!(paper.title, "Mock Paper Title");
+        assert_eq!(paper.authors, "Ada Lovelace; Alan Turing");
+        assert_eq!(paper.r#abstract, "Mock abstract text.");
+        assert_eq!(paper.doi.as_deref(), Some("10.1234/mock"));
+        assert_eq!(paper.url, "https://doi.org/10.1234/mock");
+        assert_eq!(
+            paper.pdf_url.as_deref(),
+            Some("https://example.org/mock.pdf")
+        );
+        assert_eq!(paper.source.id(), "unpaywall");
+    }
 }

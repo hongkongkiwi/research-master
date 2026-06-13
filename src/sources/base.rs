@@ -269,4 +269,71 @@ mod tests {
         let source = BaseSource::new();
         assert!(source.is_ok());
     }
+
+    #[test]
+    fn test_source_metadata() {
+        let source = BaseSource::new().unwrap();
+        assert_eq!(source.id(), "base");
+        assert_eq!(source.name(), "BASE");
+    }
+
+    #[test]
+    fn test_capabilities() {
+        let source = BaseSource::new().unwrap();
+        let caps = source.capabilities();
+        assert!(caps.contains(SourceCapabilities::SEARCH));
+        assert!(caps.contains(SourceCapabilities::DOI_LOOKUP));
+        assert_eq!(
+            caps,
+            SourceCapabilities::SEARCH | SourceCapabilities::DOI_LOOKUP
+        );
+    }
+
+    #[test]
+    fn test_response_parsing_from_mock_json() {
+        let json = r#"{
+            "result_num_found": 1,
+            "documents": [{
+                "id": "base-1",
+                "title": "Mock Paper Title",
+                "abstract": "Mock abstract text.",
+                "authors": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}],
+                "doi": "10.1234/mock",
+                "year": "2024",
+                "link": "https://example.org/base-1",
+                "publisher": "Mock Publisher"
+            }]
+        }"#;
+        let response: BaseResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.result_num_found, Some(1));
+        assert_eq!(response.documents.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_result_maps_response_fields() {
+        let source = BaseSource::new().unwrap();
+        let json = r#"{
+            "result_num_found": 1,
+            "documents": [{
+                "id": "base-1",
+                "title": "Mock Paper Title",
+                "abstract": "Mock abstract text.",
+                "authors": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}],
+                "doi": "10.1234/mock",
+                "year": "2024",
+                "link": "https://example.org/base-1",
+                "publisher": "Mock Publisher"
+            }]
+        }"#;
+        let response: BaseResponse = serde_json::from_str(json).unwrap();
+        let paper = source.parse_result(&response.documents[0]).unwrap();
+        assert_eq!(paper.title, "Mock Paper Title");
+        assert_eq!(paper.authors, "Ada Lovelace; Alan Turing");
+        assert_eq!(paper.r#abstract, "Mock abstract text.");
+        assert_eq!(paper.doi.as_deref(), Some("10.1234/mock"));
+        assert_eq!(paper.source, crate::models::SourceType::Base);
+        assert_eq!(paper.paper_id, "base-1");
+        assert_eq!(paper.url, "https://doi.org/10.1234/mock");
+        assert_eq!(paper.published_date.as_deref(), Some("2024"));
+    }
 }

@@ -218,6 +218,11 @@ fn extract_year(date: Option<&str>) -> String {
 /// Format: Author, A. A., & Author, B. B. (Year). Title. Source. DOI
 fn format_apa(paper: &Paper) -> String {
     let authors = format_authors_apa(&paper.authors);
+    let author_sentence = if authors.ends_with('.') {
+        authors
+    } else {
+        format!("{}.", authors)
+    };
     let year = extract_year(paper.published_date.as_deref());
     let title = &paper.title;
     let source = paper.source.name();
@@ -225,11 +230,11 @@ fn format_apa(paper: &Paper) -> String {
 
     if !doi.is_empty() {
         format!(
-            "{}. ({}). {}. {}. https://doi.org/{}",
-            authors, year, title, source, doi
+            "{} ({}). {}. {}. https://doi.org/{}",
+            author_sentence, year, title, source, doi
         )
     } else {
-        format!("{}. ({}). {}. {}.", authors, year, title, source)
+        format!("{} ({}). {}. {}.", author_sentence, year, title, source)
     }
 }
 
@@ -257,6 +262,11 @@ fn format_mla(paper: &Paper) -> String {
 /// Format: Author. Year. "Title." Source. DOI.
 fn format_chicago(paper: &Paper) -> String {
     let authors = format_authors_chicago(&paper.authors);
+    let author_sentence = if authors.ends_with('.') {
+        authors
+    } else {
+        format!("{}.", authors)
+    };
     let year = extract_year(paper.published_date.as_deref());
     let title = &paper.title;
     let source = paper.source.name();
@@ -264,11 +274,11 @@ fn format_chicago(paper: &Paper) -> String {
 
     if !doi.is_empty() {
         format!(
-            "{}. {}. \"{}\". {}. https://doi.org/{}.",
-            authors, year, title, source, doi
+            "{} {}. \"{}\". {}. https://doi.org/{}.",
+            author_sentence, year, title, source, doi
         )
     } else {
-        format!("{}. {}. \"{}\". {}.", authors, year, title, source)
+        format!("{} {}. \"{}\". {}.", author_sentence, year, title, source)
     }
 }
 
@@ -303,54 +313,48 @@ fn format_bibtex(paper: &Paper) -> String {
     let key = format!("{}{}{}", last_name, year, title_key);
 
     // Format authors for BibTeX (Last, First and Last, First)
-    let bibtex_authors: String = if authors.contains(';') {
-        let author_list: Vec<&str> = authors.split(';').map(|s| s.trim()).collect();
-        author_list
-            .iter()
-            .map(|a| {
-                let parts: Vec<&str> = a.split(',').map(|s| s.trim()).collect();
-                if parts.len() >= 2 {
+    let bibtex_authors: String = authors
+        .split(';')
+        .map(|a| {
+            let author = a.trim();
+            let parts: Vec<&str> = author.split(',').map(|s| s.trim()).collect();
+            if parts.len() >= 2 {
+                format!("{}, {}", parts[0].trim(), parts[1].trim())
+            } else {
+                // Try "First Last" format
+                let words: Vec<&str> = author.split_whitespace().collect();
+                if words.len() >= 2 {
                     format!(
-                        "{} and {} {}",
-                        parts[0].trim(),
-                        parts[1].trim(),
-                        parts[0].trim()
+                        "{}, {}",
+                        words.last().expect("already checked: words.len() >= 2"),
+                        words[..words.len() - 1].join(" ")
                     )
                 } else {
-                    // Try "First Last" format
-                    let words: Vec<&str> = a.split_whitespace().collect();
-                    if words.len() >= 2 {
-                        format!(
-                            "{} and {} {}",
-                            words.last().expect("already checked: words.len() >= 2"),
-                            words[..words.len() - 1].join(" "),
-                            words.last().expect("already checked")
-                        )
-                    } else {
-                        a.to_string()
-                    }
+                    author.to_string()
                 }
-            })
-            .collect::<Vec<_>>()
-            .join(" and ")
-    } else {
-        let parts: Vec<&str> = authors.split(',').map(|s| s.trim()).collect();
-        if parts.len() >= 2 {
-            format!(
-                "{} and {} {}",
-                parts[0].trim(),
-                parts[1].trim(),
-                parts[0].trim()
-            )
-        } else {
-            authors.to_string()
-        }
-    };
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" and ");
 
     let year = extract_year(paper.published_date.as_deref());
 
-    format!("@article{{{},\n  author = {{{}}},\n  title = {{{}}},\n  journal = {{{}}},\n  year = {{{}}},\n  url = {{{}}}\n}}",
-        key, bibtex_authors, paper.title, paper.source.name(), year, paper.url)
+    let doi_field = paper
+        .doi
+        .as_deref()
+        .map(|doi| format!("\n  doi = {{{}}},", doi))
+        .unwrap_or_default();
+
+    format!(
+        "@article{{{},\n  author = {{{}}},\n  title = {{{}}},\n  journal = {{{}}},\n  year = {{{}}},{}\n  url = {{{}}}\n}}",
+        key,
+        bibtex_authors,
+        paper.title,
+        paper.source.name(),
+        year,
+        doi_field,
+        paper.url
+    )
 }
 
 /// Structured citation data for JSON output
@@ -388,5 +392,238 @@ impl fmt::Display for CitationStyle {
             CitationStyle::Chicago => write!(f, "Chicago 17th"),
             CitationStyle::Bibtex => write!(f, "BibTeX"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{Paper, PaperBuilder, SourceType};
+
+    const PAPER_ID: &str = "paper-1";
+    const TITLE: &str = "Citation Testing in Rust";
+    const URL: &str = "https://example.com/paper";
+    const DOI: &str = "10.1234/example";
+
+    fn paper(authors: &str, doi: Option<&str>) -> Paper {
+        let builder = PaperBuilder::new(PAPER_ID, TITLE, URL, SourceType::Arxiv)
+            .authors(authors)
+            .published_date("2024-03-15");
+
+        match doi {
+            Some(doi) => builder.doi(doi).build(),
+            None => builder.build(),
+        }
+    }
+
+    fn paper_without_date(authors: &str) -> Paper {
+        PaperBuilder::new(PAPER_ID, TITLE, URL, SourceType::Arxiv)
+            .authors(authors)
+            .build()
+    }
+
+    #[test]
+    fn test_citation_style_display() {
+        assert_eq!(CitationStyle::Apa.to_string(), "APA 7th");
+        assert_eq!(CitationStyle::Mla.to_string(), "MLA 9th");
+        assert_eq!(CitationStyle::Chicago.to_string(), "Chicago 17th");
+        assert_eq!(CitationStyle::Bibtex.to_string(), "BibTeX");
+    }
+
+    #[test]
+    fn test_apa_single_author_without_doi() {
+        let citation = format_citation(&paper("Doe, John", None), CitationStyle::Apa);
+
+        assert_eq!(citation, "Doe, J. (2024). Citation Testing in Rust. arXiv.");
+    }
+
+    #[test]
+    fn test_apa_two_authors_without_doi() {
+        let citation = format_citation(&paper("Doe, John; Smith, Jane", None), CitationStyle::Apa);
+
+        assert_eq!(
+            citation,
+            "Doe, J. & Smith, J. (2024). Citation Testing in Rust. arXiv."
+        );
+    }
+
+    #[test]
+    fn test_apa_many_authors_without_doi() {
+        let citation = format_citation(
+            &paper("Doe, John; Smith, Jane; Brown, Bob", None),
+            CitationStyle::Apa,
+        );
+
+        assert_eq!(
+            citation,
+            "Doe, J., Smith, J. & Brown, B. (2024). Citation Testing in Rust. arXiv."
+        );
+    }
+
+    #[test]
+    fn test_apa_no_authors_uses_anonymous() {
+        let citation = format_citation(&paper("", None), CitationStyle::Apa);
+
+        assert_eq!(
+            citation,
+            "Anonymous. (2024). Citation Testing in Rust. arXiv."
+        );
+    }
+
+    #[test]
+    fn test_apa_with_doi() {
+        let citation = format_citation(&paper("Doe, John", Some(DOI)), CitationStyle::Apa);
+
+        assert_eq!(
+            citation,
+            "Doe, J. (2024). Citation Testing in Rust. arXiv. https://doi.org/10.1234/example"
+        );
+    }
+
+    #[test]
+    fn test_mla_single_author() {
+        let citation = format_citation(&paper("Doe, John", None), CitationStyle::Mla);
+
+        assert_eq!(
+            citation,
+            "Doe, John. \"Citation Testing in Rust\". arXiv, 2024."
+        );
+    }
+
+    #[test]
+    fn test_mla_two_authors() {
+        let citation = format_citation(&paper("Doe, John; Smith, Jane", None), CitationStyle::Mla);
+
+        assert_eq!(
+            citation,
+            "Doe, John and Jane Smith. \"Citation Testing in Rust\". arXiv, 2024."
+        );
+    }
+
+    #[test]
+    fn test_mla_three_or_more_authors_uses_et_al() {
+        let citation = format_citation(
+            &paper("Doe, John; Smith, Jane; Brown, Bob", None),
+            CitationStyle::Mla,
+        );
+
+        assert_eq!(
+            citation,
+            "Doe, John et al. \"Citation Testing in Rust\". arXiv, 2024."
+        );
+    }
+
+    #[test]
+    fn test_chicago_single_author() {
+        let citation = format_citation(&paper("Doe, John", None), CitationStyle::Chicago);
+
+        assert_eq!(
+            citation,
+            "Doe, John. 2024. \"Citation Testing in Rust\". arXiv."
+        );
+    }
+
+    #[test]
+    fn test_chicago_two_authors() {
+        let citation = format_citation(
+            &paper("Doe, John; Smith, Jane", None),
+            CitationStyle::Chicago,
+        );
+
+        assert_eq!(
+            citation,
+            "Doe, John and Jane Smith. 2024. \"Citation Testing in Rust\". arXiv."
+        );
+    }
+
+    #[test]
+    fn test_chicago_three_or_more_authors_uses_et_al() {
+        let citation = format_citation(
+            &paper("Doe, John; Smith, Jane; Brown, Bob", None),
+            CitationStyle::Chicago,
+        );
+
+        assert_eq!(
+            citation,
+            "Doe, John et al. 2024. \"Citation Testing in Rust\". arXiv."
+        );
+    }
+
+    #[test]
+    fn test_bibtex_author_formats_key_generation_and_doi() {
+        let citation = format_citation(
+            &paper("Doe, John; Jane Smith", Some(DOI)),
+            CitationStyle::Bibtex,
+        );
+
+        assert_eq!(
+            citation,
+            "@article{Doe2024CitationTestingin,\n  author = {Doe, John and Smith, Jane},\n  title = {Citation Testing in Rust},\n  journal = {arXiv},\n  year = {2024},\n  doi = {10.1234/example},\n  url = {https://example.com/paper}\n}"
+        );
+    }
+
+    #[test]
+    fn test_bibtex_without_doi() {
+        let citation = format_citation(&paper("John Michael Doe", None), CitationStyle::Bibtex);
+
+        assert_eq!(
+            citation,
+            "@article{Doe2024CitationTestingin,\n  author = {Doe, John Michael},\n  title = {Citation Testing in Rust},\n  journal = {arXiv},\n  year = {2024},\n  url = {https://example.com/paper}\n}"
+        );
+        assert!(!citation.contains("doi ="));
+    }
+
+    #[test]
+    fn test_extract_year() {
+        assert_eq!(extract_year(Some("2024-03-15")), "2024");
+        assert_eq!(extract_year(Some("2024")), "2024");
+        assert_eq!(extract_year(Some("")), "n.d.");
+        assert_eq!(extract_year(None), "n.d.");
+    }
+
+    #[test]
+    fn test_get_structured_citation_basic_structure() {
+        let source_paper = paper("Doe, John", Some(DOI));
+        let structured = get_structured_citation(&source_paper, CitationStyle::Mla);
+
+        assert_eq!(structured.style, "Mla");
+        assert_eq!(
+            structured.formatted,
+            format_citation(&source_paper, CitationStyle::Mla)
+        );
+        assert_eq!(structured.authors, "Doe, John");
+        assert_eq!(structured.title, TITLE);
+        assert_eq!(structured.year, "2024");
+        assert_eq!(structured.source, "arXiv");
+        assert_eq!(structured.doi, Some(DOI.to_string()));
+        assert_eq!(structured.url, URL);
+    }
+
+    #[test]
+    fn test_get_structured_citation_without_date_uses_no_date() {
+        let source_paper = paper_without_date("Doe, John");
+        let structured = get_structured_citation(&source_paper, CitationStyle::Apa);
+
+        assert_eq!(structured.year, "n.d.");
+        assert!(structured.formatted.contains("(n.d.)"));
+    }
+
+    #[test]
+    fn test_format_author_apa_single() {
+        assert_eq!(format_author_apa_single("Doe, John Michael"), "Doe, JM.");
+        assert_eq!(format_author_apa_single("John Michael Doe"), "Doe, JM.");
+        assert_eq!(format_author_apa_single("Plato"), "Plato");
+    }
+
+    #[test]
+    fn test_format_author_mla_single() {
+        assert_eq!(
+            format_author_mla_single("Doe, John Michael"),
+            "Doe, John Michael"
+        );
+        assert_eq!(
+            format_author_mla_single("John Michael Doe"),
+            "Doe, John Michael"
+        );
     }
 }

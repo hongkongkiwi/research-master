@@ -326,4 +326,102 @@ mod tests {
         let source = OsfSource::new();
         assert!(source.is_ok());
     }
+
+    #[test]
+    fn test_source_metadata() {
+        let source = OsfSource::new().unwrap();
+        assert_eq!(source.id(), "osf");
+        assert_eq!(source.name(), "OSF Preprints");
+    }
+
+    #[test]
+    fn test_capabilities() {
+        let source = OsfSource::new().unwrap();
+        let caps = source.capabilities();
+        assert!(caps.contains(SourceCapabilities::SEARCH));
+        assert!(caps.contains(SourceCapabilities::DOWNLOAD));
+        assert!(caps.contains(SourceCapabilities::DOI_LOOKUP));
+        assert_eq!(
+            caps,
+            SourceCapabilities::SEARCH
+                | SourceCapabilities::DOWNLOAD
+                | SourceCapabilities::DOI_LOOKUP
+        );
+    }
+
+    #[test]
+    fn test_response_parsing_from_mock_json() {
+        let json = r#"{
+            "total_results": 1,
+            "data": [{
+                "id": "osf-1",
+                "attributes": {
+                    "title": "Mock Paper Title",
+                    "description": "Mock abstract text.",
+                    "doi": "10.1234/mock",
+                    "date_created": "2024-04-02T00:00:00Z",
+                    "date_modified": "2024-04-03T00:00:00Z"
+                },
+                "relationships": {
+                    "authors": {
+                        "data": [
+                            {"id": "u1", "attributes": {"name": "Ada Lovelace", "given_name": "Ada", "family_name": "Lovelace"}},
+                            {"id": "u2", "attributes": {"name": "Alan Turing", "given_name": "Alan", "family_name": "Turing"}}
+                        ]
+                    }
+                },
+                "links": {
+                    "html": "https://osf.io/preprints/osf/osf-1",
+                    "download": "https://osf.io/download/osf-1"
+                }
+            }]
+        }"#;
+        let response: OsfResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.total_results, Some(1));
+        assert_eq!(response.data.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_result_maps_response_fields() {
+        let source = OsfSource::new().unwrap();
+        let json = r#"{
+            "total_results": 1,
+            "data": [{
+                "id": "osf-1",
+                "attributes": {
+                    "title": "Mock Paper Title",
+                    "description": "Mock abstract text.",
+                    "doi": "10.1234/mock",
+                    "date_created": "2024-04-02T00:00:00Z",
+                    "date_modified": "2024-04-03T00:00:00Z"
+                },
+                "relationships": {
+                    "authors": {
+                        "data": [
+                            {"id": "u1", "attributes": {"name": "Ada Lovelace", "given_name": "Ada", "family_name": "Lovelace"}},
+                            {"id": "u2", "attributes": {"name": "Alan Turing", "given_name": "Alan", "family_name": "Turing"}}
+                        ]
+                    }
+                },
+                "links": {
+                    "html": "https://osf.io/preprints/osf/osf-1",
+                    "download": "https://osf.io/download/osf-1"
+                }
+            }]
+        }"#;
+        let response: OsfResponse = serde_json::from_str(json).unwrap();
+        let paper = source.parse_result(&response.data[0]).unwrap();
+        assert_eq!(paper.title, "Mock Paper Title");
+        assert_eq!(paper.authors, "Ada Lovelace; Alan Turing");
+        assert_eq!(paper.r#abstract, "Mock abstract text.");
+        assert_eq!(paper.doi.as_deref(), Some("10.1234/mock"));
+        assert_eq!(paper.source, crate::models::SourceType::Osf);
+        assert_eq!(paper.paper_id, "osf-1");
+        assert_eq!(paper.url, "https://osf.io/preprints/osf/osf-1");
+        assert_eq!(paper.published_date.as_deref(), Some("2024"));
+        assert_eq!(
+            paper.pdf_url.as_deref(),
+            Some("https://osf.io/download/osf-1")
+        );
+    }
 }

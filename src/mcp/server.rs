@@ -28,6 +28,12 @@ pub struct McpServer {
 impl McpServer {
     /// Create a new MCP server with the given source registry
     pub fn new(sources: Arc<SourceRegistry>) -> Result<Self, pmcp::Error> {
+        if sources.is_empty() {
+            return Err(Error::invalid_params(
+                "Cannot create MCP server without any registered sources",
+            ));
+        }
+
         let tools = ToolRegistry::from_sources(&sources);
         let server = Self::build_server_impl(tools)?;
         Ok(Self {
@@ -154,4 +160,47 @@ impl ToolHandler for ToolWrapper {
 /// Create a new MCP server instance
 pub fn create_mcp_server(sources: Arc<SourceRegistry>) -> Result<McpServer, pmcp::Error> {
     McpServer::new(sources)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sources::{MockSource, SourceRegistry};
+
+    fn source_registry_with_mock() -> Arc<SourceRegistry> {
+        let mut registry = SourceRegistry::empty_for_tests();
+        registry.register(Arc::new(MockSource::new()));
+        Arc::new(registry)
+    }
+
+    #[test]
+    fn test_server_creation_succeeds_with_source_registry() {
+        let server = McpServer::new(source_registry_with_mock());
+        assert!(
+            server.is_ok(),
+            "server should build with at least one source"
+        );
+    }
+
+    #[test]
+    fn test_server_creation_fails_with_empty_source_registry() {
+        let sources = Arc::new(SourceRegistry::empty_for_tests());
+        let server = McpServer::new(sources);
+        assert!(
+            server.is_err(),
+            "server should reject an empty source registry"
+        );
+    }
+
+    #[test]
+    fn test_tools_returns_arc_mutex_server() {
+        let server = McpServer::new(source_registry_with_mock()).expect("server should build");
+        let tools = server.tools();
+
+        assert_eq!(Arc::strong_count(&tools), 2);
+        assert!(
+            tools.try_lock().is_ok(),
+            "returned Arc should contain a lockable Server"
+        );
+    }
 }

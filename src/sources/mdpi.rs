@@ -250,4 +250,67 @@ mod tests {
         let source = MdpiSource::new();
         assert!(source.is_ok());
     }
+
+    #[test]
+    fn test_source_metadata() {
+        let source = MdpiSource::new().unwrap();
+        assert_eq!(source.id(), "mdpi");
+        assert_eq!(source.name(), "MDPI");
+    }
+
+    #[test]
+    fn test_capabilities() {
+        let source = MdpiSource::new().unwrap();
+        let caps = source.capabilities();
+        assert!(caps.contains(SourceCapabilities::SEARCH));
+        assert!(caps.contains(SourceCapabilities::DOI_LOOKUP));
+        assert_eq!(
+            caps,
+            SourceCapabilities::SEARCH | SourceCapabilities::DOI_LOOKUP
+        );
+    }
+
+    #[test]
+    fn test_response_parsing_from_mock_json() {
+        let json = r#"{
+            "total_results": 1,
+            "items": [{
+                "id": "mdpi-1",
+                "doi": "10.1234/mock",
+                "title": "Mock Paper Title",
+                "abstract": "Mock abstract text.",
+                "publication_date": "2024-02-01",
+                "authors": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}]
+            }]
+        }"#;
+        let response: MdpiResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.total_results, Some(1));
+        assert_eq!(response.items.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_result_maps_response_fields() {
+        let source = MdpiSource::new().unwrap();
+        let json = r#"{
+            "total_results": 1,
+            "items": [{
+                "id": "mdpi-1",
+                "doi": "10.1234/mock",
+                "title": "Mock Paper Title",
+                "abstract": "Mock abstract text.",
+                "publication_date": "2024-02-01",
+                "authors": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}]
+            }]
+        }"#;
+        let response: MdpiResponse = serde_json::from_str(json).unwrap();
+        let paper = source.parse_result(&response.items[0]).unwrap();
+        assert_eq!(paper.title, "Mock Paper Title");
+        assert_eq!(paper.authors, "Ada Lovelace; Alan Turing");
+        assert_eq!(paper.r#abstract, "Mock abstract text.");
+        assert_eq!(paper.doi.as_deref(), Some("10.1234/mock"));
+        assert_eq!(paper.source.id(), "mdpi");
+        assert_eq!(paper.paper_id, "10.1234/mock");
+        assert_eq!(paper.url, "https://doi.org/10.1234/mock");
+        assert_eq!(paper.published_date.as_deref(), Some("2024-02-01"));
+    }
 }

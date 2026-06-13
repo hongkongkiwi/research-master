@@ -41,47 +41,57 @@ pub enum InstallationMethod {
 
 /// Detect how the tool was installed
 pub fn detect_installation() -> InstallationMethod {
-    let exe_path = match std::env::current_exe() {
-        Ok(path) => path,
-        Err(_) => return InstallationMethod::Unknown,
-    };
-
-    // Check if running from Homebrew prefix
-    if let Ok(homebrew_prefix) = std::env::var("HOMEBREW_PREFIX") {
-        let homebrew_bin = PathBuf::from(homebrew_prefix)
-            .join("bin")
-            .join("research-master");
-        if exe_path == homebrew_bin
-            || exe_path.starts_with(homebrew_bin.parent().unwrap_or(&homebrew_bin))
-        {
-            return InstallationMethod::Homebrew { path: exe_path };
-        }
+    #[cfg(test)]
+    {
+        // Unit tests run from Cargo's test harness rather than an installed
+        // research-master binary, so there is no meaningful installation method.
+        InstallationMethod::Unknown
     }
 
-    // Check if installed via cargo (check if ~/.cargo/bin is in the path)
-    if let Ok(cargo_home) = std::env::var("CARGO_HOME") {
-        let cargo_bin = PathBuf::from(cargo_home)
-            .join("bin")
-            .join("research-master");
-        if exe_path == cargo_bin {
-            return InstallationMethod::Cargo { path: exe_path };
+    #[cfg(not(test))]
+    {
+        let exe_path = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(_) => return InstallationMethod::Unknown,
+        };
+
+        // Check if running from Homebrew prefix
+        if let Ok(homebrew_prefix) = std::env::var("HOMEBREW_PREFIX") {
+            let homebrew_bin = PathBuf::from(homebrew_prefix)
+                .join("bin")
+                .join("research-master");
+            if exe_path == homebrew_bin
+                || exe_path.starts_with(homebrew_bin.parent().unwrap_or(&homebrew_bin))
+            {
+                return InstallationMethod::Homebrew { path: exe_path };
+            }
         }
-    }
 
-    // Check common Homebrew locations
-    let homebrew_paths = [
-        PathBuf::from("/opt/homebrew/bin/research-master"),
-        PathBuf::from("/usr/local/bin/research-master"),
-        PathBuf::from("/home/linuxbrew/.linuxbrew/bin/research-master"),
-    ];
-
-    for hb_path in &homebrew_paths {
-        if exe_path == *hb_path {
-            return InstallationMethod::Homebrew { path: exe_path };
+        // Check if installed via cargo (check if ~/.cargo/bin is in the path)
+        if let Ok(cargo_home) = std::env::var("CARGO_HOME") {
+            let cargo_bin = PathBuf::from(cargo_home)
+                .join("bin")
+                .join("research-master");
+            if exe_path == cargo_bin {
+                return InstallationMethod::Cargo { path: exe_path };
+            }
         }
-    }
 
-    InstallationMethod::Direct { path: exe_path }
+        // Check common Homebrew locations
+        let homebrew_paths = [
+            PathBuf::from("/opt/homebrew/bin/research-master"),
+            PathBuf::from("/usr/local/bin/research-master"),
+            PathBuf::from("/home/linuxbrew/.linuxbrew/bin/research-master"),
+        ];
+
+        for hb_path in &homebrew_paths {
+            if exe_path == *hb_path {
+                return InstallationMethod::Homebrew { path: exe_path };
+            }
+        }
+
+        InstallationMethod::Direct { path: exe_path }
+    }
 }
 
 /// Get installation-specific update instructions
@@ -618,4 +628,208 @@ pub fn verify_gpg_signature(sha256sums_path: &Path, signature: &str) -> Result<b
 
     eprintln!("GPG verification result: {}", stderr);
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    const HELLO_WORLD_SHA256: &str =
+        "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+
+    fn release_with_assets(assets: Vec<ReleaseAsset>) -> ReleaseInfo {
+        ReleaseInfo {
+            tag_name: "v1.2.3".to_string(),
+            version: "1.2.3".to_string(),
+            body: "Release notes".to_string(),
+            published_at: "2026-01-01T00:00:00Z".to_string(),
+            assets,
+        }
+    }
+
+    fn asset(name: impl Into<String>) -> ReleaseAsset {
+        let name = name.into();
+        ReleaseAsset {
+            download_url: format!("https://example.com/{name}"),
+            name,
+        }
+    }
+
+    #[test]
+    fn get_current_target_returns_non_empty() {
+        assert!(!get_current_target().is_empty());
+    }
+
+    #[test]
+    fn find_asset_for_platform_prefers_exact_archive_match() {
+        let target = get_current_target();
+        let preferred_ext = if cfg!(target_os = "windows") {
+            ".zip"
+        } else {
+            ".tar.gz"
+        };
+        let fallback_name = format!("research-master-{target}.bin");
+        let exact_name = format!("research-master-{target}{preferred_ext}");
+        let release = release_with_assets(vec![asset(&fallback_name), asset(&exact_name)]);
+
+        let found = find_asset_for_platform(&release).expect("expected matching asset");
+
+        assert_eq!(found.name, exact_name);
+    }
+
+    #[test]
+    fn find_asset_for_platform_falls_back_to_any_target_match() {
+        let target = get_current_target();
+        let non_preferred_ext = if cfg!(target_os = "windows") {
+            ".tar.gz"
+        } else {
+            ".zip"
+        };
+        let fallback_name = format!("research-master-{target}{non_preferred_ext}");
+        let release = release_with_assets(vec![asset(&fallback_name)]);
+
+        let found = find_asset_for_platform(&release).expect("expected fallback asset");
+
+        assert_eq!(found.name, fallback_name);
+    }
+
+    #[test]
+    fn find_asset_for_platform_returns_none_without_target_match() {
+        let release = release_with_assets(vec![
+            asset("research-master-x86_64-unsupported-os.tar.gz"),
+            asset("SHA256SUMS.txt"),
+        ]);
+
+        assert!(find_asset_for_platform(&release).is_none());
+    }
+
+    #[test]
+    fn compute_sha256_returns_known_hash_for_file() {
+        let temp_dir = tempdir().expect("tempdir");
+        let file_path = temp_dir.path().join("hello.txt");
+        fs::write(&file_path, b"hello world").expect("write test file");
+
+        let hash = compute_sha256(&file_path).expect("compute sha256");
+
+        assert_eq!(hash, HELLO_WORLD_SHA256);
+    }
+
+    #[test]
+    fn compute_sha256_errors_for_nonexistent_file() {
+        let temp_dir = tempdir().expect("tempdir");
+        let missing_path = temp_dir.path().join("missing.txt");
+
+        assert!(compute_sha256(&missing_path).is_err());
+    }
+
+    #[test]
+    fn verify_sha256_returns_true_for_matching_hash() {
+        let temp_dir = tempdir().expect("tempdir");
+        let file_path = temp_dir.path().join("hello.txt");
+        fs::write(&file_path, b"hello world").expect("write test file");
+
+        let verified = verify_sha256(&file_path, HELLO_WORLD_SHA256).expect("verify sha256");
+
+        assert!(verified);
+    }
+
+    #[test]
+    fn verify_sha256_returns_false_for_mismatched_hash() {
+        let temp_dir = tempdir().expect("tempdir");
+        let file_path = temp_dir.path().join("hello.txt");
+        fs::write(&file_path, b"hello world").expect("write test file");
+        let wrong_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+
+        let verified = verify_sha256(&file_path, wrong_hash).expect("verify sha256");
+
+        assert!(!verified);
+    }
+
+    #[test]
+    fn get_update_instructions_handles_all_installation_methods() {
+        let path = PathBuf::from("/tmp/research-master");
+
+        let homebrew =
+            get_update_instructions(&InstallationMethod::Homebrew { path: path.clone() });
+        assert!(homebrew.contains("Homebrew"));
+        assert!(homebrew.contains("brew upgrade research-master"));
+
+        let cargo = get_update_instructions(&InstallationMethod::Cargo { path: path.clone() });
+        assert!(cargo.contains("cargo"));
+        assert!(cargo.contains("cargo install research-master"));
+
+        let direct = get_update_instructions(&InstallationMethod::Direct { path });
+        assert!(direct.contains("download and install"));
+
+        let unknown = get_update_instructions(&InstallationMethod::Unknown);
+        assert!(unknown.contains("Unable to detect installation method"));
+        assert!(unknown.contains("brew upgrade research-master"));
+        assert!(unknown.contains("cargo install research-master"));
+        assert!(unknown.contains("Direct download"));
+    }
+
+    #[test]
+    fn detect_installation_returns_unknown_in_unit_tests() {
+        assert!(matches!(detect_installation(), InstallationMethod::Unknown));
+    }
+
+    #[test]
+    fn release_asset_can_be_constructed() {
+        let asset = ReleaseAsset {
+            name: "research-master-x86_64-apple-darwin.tar.gz".to_string(),
+            download_url: "https://example.com/download".to_string(),
+        };
+
+        assert_eq!(asset.name, "research-master-x86_64-apple-darwin.tar.gz");
+        assert_eq!(asset.download_url, "https://example.com/download");
+    }
+
+    #[test]
+    fn release_info_can_be_constructed_with_assets() {
+        let release = release_with_assets(vec![
+            asset("research-master-x86_64-apple-darwin.tar.gz"),
+            asset("SHA256SUMS.txt"),
+        ]);
+
+        assert_eq!(release.tag_name, "v1.2.3");
+        assert_eq!(release.version, "1.2.3");
+        assert_eq!(release.body, "Release notes");
+        assert_eq!(release.published_at, "2026-01-01T00:00:00Z");
+        assert_eq!(release.assets.len(), 2);
+        assert_eq!(
+            release.assets[0].name,
+            "research-master-x86_64-apple-darwin.tar.gz"
+        );
+        assert_eq!(
+            release.assets[1].download_url,
+            "https://example.com/SHA256SUMS.txt"
+        );
+    }
+
+    #[test]
+    fn cleanup_temp_files_removes_existing_files_and_ignores_missing_files() {
+        let temp_dir = tempdir().expect("tempdir");
+        let file_one = temp_dir.path().join("one.tmp");
+        let file_two = temp_dir.path().join("two.tmp");
+        let missing_file = temp_dir.path().join("missing.tmp");
+        fs::write(&file_one, b"one").expect("write file one");
+        fs::write(&file_two, b"two").expect("write file two");
+
+        cleanup_temp_files(vec![file_one.clone(), missing_file, file_two.clone()]);
+
+        assert!(!file_one.exists());
+        assert!(!file_two.exists());
+        assert!(temp_dir.path().exists());
+    }
+
+    #[test]
+    fn is_command_available_detects_known_and_missing_commands() {
+        assert!(is_command_available("cargo"));
+        assert!(is_command_available("rustc"));
+        assert!(!is_command_available(
+            "research-master-definitely-not-a-real-command"
+        ));
+    }
 }

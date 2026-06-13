@@ -185,3 +185,206 @@ fn now() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn test_service() -> (TempDir, HistoryService) {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("history.jsonl");
+        let service = HistoryService { path };
+        (temp_dir, service)
+    }
+
+    #[test]
+    fn test_history_service_creation_with_temp_path() {
+        let (temp_dir, service) = test_service();
+        let expected_path = temp_dir.path().join("history.jsonl");
+
+        assert_eq!(service.path(), expected_path.as_path());
+        assert!(!service.path().exists());
+        assert!(service.read_entries(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_add_search_and_read_back_entries() {
+        let (_temp_dir, service) = test_service();
+        let before = now();
+
+        service
+            .add_search("quantum computing", Some("arxiv"))
+            .unwrap();
+
+        let entries = service.read_entries(10).unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.entry_type, HistoryEntryType::Search);
+        assert!(entry.timestamp >= before);
+        assert_eq!(entry.query, "quantum computing");
+        assert_eq!(entry.source.as_deref(), Some("arxiv"));
+        assert_eq!(entry.title, None);
+        assert_eq!(entry.details, None);
+    }
+
+    #[test]
+    fn test_add_download_with_title_and_path_details() {
+        let (_temp_dir, service) = test_service();
+
+        service
+            .add_download(
+                "2301.00001",
+                "arxiv",
+                Some("A Test Paper"),
+                Some("/tmp/a-test-paper.pdf"),
+            )
+            .unwrap();
+
+        let entries = service.read_entries(10).unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.entry_type, HistoryEntryType::Download);
+        assert_eq!(entry.query, "2301.00001");
+        assert_eq!(entry.source.as_deref(), Some("arxiv"));
+        assert_eq!(entry.title.as_deref(), Some("A Test Paper"));
+        assert_eq!(entry.details.as_deref(), Some("/tmp/a-test-paper.pdf"));
+    }
+
+    #[test]
+    fn test_add_view_with_title() {
+        let (_temp_dir, service) = test_service();
+
+        service
+            .add_view("10.1234/example", "crossref", Some("Viewed Paper"))
+            .unwrap();
+
+        let entries = service.read_entries(10).unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.entry_type, HistoryEntryType::View);
+        assert_eq!(entry.query, "10.1234/example");
+        assert_eq!(entry.source.as_deref(), Some("crossref"));
+        assert_eq!(entry.title.as_deref(), Some("Viewed Paper"));
+        assert_eq!(entry.details, None);
+    }
+
+    #[test]
+    fn test_read_entries_limit_parameter() {
+        let (_temp_dir, service) = test_service();
+
+        service.add_search("first", None).unwrap();
+        service.add_search("second", None).unwrap();
+        service.add_search("third", None).unwrap();
+        service.add_search("fourth", None).unwrap();
+
+        let entries = service.read_entries(2).unwrap();
+        let queries: Vec<&str> = entries.iter().map(|entry| entry.query.as_str()).collect();
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(queries, vec!["fourth", "third"]);
+    }
+
+    #[test]
+    fn test_filter_entries_by_type() {
+        let (_temp_dir, service) = test_service();
+
+        service
+            .add_search("neural networks", Some("arxiv"))
+            .unwrap();
+        service
+            .add_download("2301.00002", "arxiv", Some("Download"), None)
+            .unwrap();
+        service
+            .add_view("2301.00003", "arxiv", Some("View"))
+            .unwrap();
+
+        let entries = service.read_entries(10).unwrap();
+        let searches = service.filter_entries(&entries, HistoryEntryType::Search);
+        let downloads = service.filter_entries(&entries, HistoryEntryType::Download);
+        let views = service.filter_entries(&entries, HistoryEntryType::View);
+
+        assert_eq!(searches.len(), 1);
+        assert_eq!(searches[0].query, "neural networks");
+        assert_eq!(downloads.len(), 1);
+        assert_eq!(downloads[0].query, "2301.00002");
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].query, "2301.00003");
+    }
+
+    #[test]
+    fn test_clear_functionality() {
+        let (_temp_dir, service) = test_service();
+
+        service.add_search("to be cleared", None).unwrap();
+        assert_eq!(service.read_entries(10).unwrap().len(), 1);
+        assert!(service.path().exists());
+
+        service.clear().unwrap();
+
+        assert!(service.path().exists());
+        assert!(service.read_entries(10).unwrap().is_empty());
+        assert_eq!(std::fs::metadata(service.path()).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_multiple_entries_are_returned_newest_first() {
+        let (_temp_dir, service) = test_service();
+
+        service.add_search("oldest", None).unwrap();
+        service
+            .add_download("middle", "arxiv", Some("Middle"), Some("/tmp/middle.pdf"))
+            .unwrap();
+        service
+            .add_view("newest", "pubmed", Some("Newest"))
+            .unwrap();
+
+        let entries = service.read_entries(10).unwrap();
+        let queries: Vec<&str> = entries.iter().map(|entry| entry.query.as_str()).collect();
+        let types: Vec<HistoryEntryType> = entries
+            .iter()
+            .map(|entry| entry.entry_type.clone())
+            .collect();
+
+        assert_eq!(queries, vec!["newest", "middle", "oldest"]);
+        assert_eq!(
+            types,
+            vec![
+                HistoryEntryType::View,
+                HistoryEntryType::Download,
+                HistoryEntryType::Search,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_history_entry_struct_field_access() {
+        let entry = HistoryEntry {
+            entry_type: HistoryEntryType::Download,
+            timestamp: 1_700_000_000,
+            query: "paper-id".to_string(),
+            source: Some("semantic".to_string()),
+            title: Some("Accessible Fields".to_string()),
+            details: Some("/papers/accessible-fields.pdf".to_string()),
+        };
+
+        assert_eq!(entry.entry_type, HistoryEntryType::Download);
+        assert_eq!(entry.timestamp, 1_700_000_000);
+        assert_eq!(entry.query, "paper-id");
+        assert_eq!(entry.source.as_deref(), Some("semantic"));
+        assert_eq!(entry.title.as_deref(), Some("Accessible Fields"));
+        assert_eq!(
+            entry.details.as_deref(),
+            Some("/papers/accessible-fields.pdf")
+        );
+    }
+
+    #[test]
+    fn test_default_implementation_matches_new() {
+        let default_service = HistoryService::default();
+        let new_service = HistoryService::new();
+
+        assert_eq!(default_service.path(), new_service.path());
+        assert_eq!(default_service.path().file_name().unwrap(), "history.jsonl");
+    }
+}

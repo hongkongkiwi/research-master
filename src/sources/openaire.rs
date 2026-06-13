@@ -468,9 +468,128 @@ impl<T: Clone> OneOrMany<T> {
 mod tests {
     use super::*;
 
+    fn mock_json() -> &'static str {
+        r#"{
+            "response": {
+                "results": {
+                    "result": {
+                        "metadata": {
+                            "oaf:entity": {
+                                "oaf:result": {
+                                    "title": ["Mock Paper Title"],
+                                    "creator": [{"$name": "Ada Lovelace"}, {"$name": "Alan Turing"}],
+                                    "description": ["Mock abstract text."],
+                                    "pid": [{"@classid": "doi", "$": "10.1234/mock"}],
+                                    "dateofacceptance": {"$": "2024-05-01"},
+                                    "bestaccessright": {"@classid": "OPEN"},
+                                    "instance": {
+                                        "webresource": {
+                                            "url": ["https://repo.example/mock.pdf", "https://repo.example/landing"]
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }"#
+    }
+
     #[test]
     fn test_source_creation() {
         let source = OpenaireSource::new();
         assert!(source.is_ok());
+    }
+
+    #[test]
+    fn test_source_metadata() {
+        let source = OpenaireSource::new().unwrap();
+        assert_eq!(source.id(), "openaire");
+        assert_eq!(source.name(), "OpenAIRE");
+    }
+
+    #[test]
+    fn test_capabilities() {
+        let source = OpenaireSource::new().unwrap();
+        let caps = source.capabilities();
+        assert!(caps.contains(SourceCapabilities::SEARCH));
+        assert!(caps.contains(SourceCapabilities::DOWNLOAD));
+        assert!(caps.contains(SourceCapabilities::DOI_LOOKUP));
+        assert_eq!(
+            caps,
+            SourceCapabilities::SEARCH
+                | SourceCapabilities::DOWNLOAD
+                | SourceCapabilities::DOI_LOOKUP
+        );
+    }
+
+    #[test]
+    fn test_response_parsing_from_mock_json() {
+        let response: OpenaireResponse = serde_json::from_str(mock_json()).unwrap();
+        let results = response.response.results.result.as_slice();
+        assert_eq!(results.len(), 1);
+        let publication = &results[0].metadata.oaf_entity.oaf_result;
+        assert_eq!(
+            publication
+                .title
+                .as_ref()
+                .unwrap()
+                .first_cloned()
+                .as_deref(),
+            Some("Mock Paper Title")
+        );
+    }
+
+    #[test]
+    fn test_parse_result_maps_response_fields() {
+        let source = OpenaireSource::new().unwrap();
+        let response: OpenaireResponse = serde_json::from_str(mock_json()).unwrap();
+        let paper = source
+            .parse_result(&response.response.results.result.as_slice()[0])
+            .unwrap();
+        assert_eq!(paper.paper_id, "10.1234/mock");
+        assert_eq!(paper.title, "Mock Paper Title");
+        assert_eq!(paper.authors, "Ada Lovelace; Alan Turing");
+        assert_eq!(paper.r#abstract, "Mock abstract text.");
+        assert_eq!(paper.doi.as_deref(), Some("10.1234/mock"));
+        assert_eq!(paper.url, "https://repo.example/mock.pdf");
+        assert_eq!(paper.published_date.as_deref(), Some("2024-05-01"));
+        assert_eq!(
+            paper.pdf_url.as_deref(),
+            Some("https://repo.example/mock.pdf")
+        );
+        assert_eq!(paper.source, crate::models::SourceType::OpenAIRE);
+        assert_eq!(
+            paper
+                .extra
+                .as_ref()
+                .and_then(|m| m.get("access_right"))
+                .and_then(|v| v.as_str()),
+            Some("OPEN")
+        );
+    }
+
+    #[test]
+    fn test_helper_functions() {
+        let source = OpenaireSource::new().unwrap();
+        let url = source.build_search_url("title", "quantum networks", 25);
+        assert!(url.contains("format=json"));
+        assert!(url.contains("size=25"));
+        assert!(url.contains("title=quantum%20networks"));
+
+        assert!(OpenaireSource::is_pdf_url("https://example.org/paper.pdf"));
+        assert!(OpenaireSource::is_pdf_url(
+            "https://example.org/download.pdf?version=1"
+        ));
+        assert!(OpenaireSource::is_pdf_url("https://example.org/pdf/123"));
+        assert!(!OpenaireSource::is_pdf_url("https://example.org/landing"));
+
+        let one = OneOrMany::One("one".to_string());
+        assert_eq!(one.as_slice().len(), 1);
+        assert_eq!(one.first_cloned().as_deref(), Some("one"));
+        let many = OneOrMany::Many(vec!["one".to_string(), "two".to_string()]);
+        assert_eq!(many.as_slice().len(), 2);
+        assert_eq!(many.into_vec(), vec!["one".to_string(), "two".to_string()]);
     }
 }

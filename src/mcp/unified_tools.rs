@@ -750,7 +750,12 @@ impl ToolHandler for BatchGetPapersHandler {
 
         let ids: Vec<&str> = paper_ids.iter().filter_map(|v| v.as_str()).collect();
         if ids.is_empty() {
-            return Err("No valid paper IDs provided".to_string());
+            return Ok(serde_json::json!({
+                "total_queried": 0,
+                "total_found": 0,
+                "total_not_found": 0,
+                "results": [],
+            }));
         }
 
         let futures: Vec<_> = ids
@@ -1145,8 +1150,9 @@ async fn search_exa(query: &str, max_results: usize, api_key: &str) -> Result<Va
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{CitationRequest, DownloadRequest, ReadRequest};
+    use crate::models::{CitationRequest, DownloadRequest, Paper, ReadRequest, SourceType};
     use crate::sources::{Source, SourceCapabilities};
+    use serde_json::json;
     use std::sync::Arc;
 
     #[derive(Debug)]
@@ -1288,5 +1294,153 @@ mod tests {
         assert!(paper_id_upper_start("PMC12345", "PMC"));
         assert!(paper_id_upper_start("pmc12345", "PMC"));
         assert!(!paper_id_upper_start("", "PMC"));
+    }
+
+    fn empty_sources() -> Arc<Vec<Arc<dyn Source>>> {
+        Arc::new(Vec::new())
+    }
+
+    fn test_paper(id: &str, title: &str, source: SourceType) -> Paper {
+        let mut paper = Paper::new(
+            id.to_string(),
+            title.to_string(),
+            format!("https://example.com/{id}"),
+            source,
+        );
+        paper.authors = "Ada Lovelace; Alan Turing".to_string();
+        paper.doi = Some("10.1234/example".to_string());
+        paper.published_date = Some("2024-01-01".to_string());
+        paper
+    }
+
+    #[tokio::test]
+    async fn test_author_profile_handler_errors_for_missing_author_param() {
+        let handler = AuthorProfileHandler {
+            sources: empty_sources(),
+        };
+
+        let err = handler
+            .execute(json!({}))
+            .await
+            .expect_err("missing author should fail");
+        assert!(err.contains("Missing 'author' parameter"));
+    }
+
+    #[tokio::test]
+    async fn test_batch_get_papers_handler_empty_paper_ids_returns_empty_result() {
+        let handler = BatchGetPapersHandler {
+            sources: empty_sources(),
+        };
+
+        let result = handler
+            .execute(json!({"paper_ids": []}))
+            .await
+            .expect("empty paper_ids should be a valid empty batch");
+
+        assert_eq!(result["total_queried"], 0);
+        assert_eq!(result["total_found"], 0);
+        assert_eq!(result["total_not_found"], 0);
+        assert_eq!(result["results"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_export_papers_handler_bibtex_format_with_mock_papers() {
+        let handler = ExportPapersHandler {
+            sources: empty_sources(),
+        };
+        let papers = vec![test_paper(
+            "paper-1",
+            "Test Driven Research",
+            SourceType::Arxiv,
+        )];
+
+        let result = handler
+            .execute(json!({"papers": papers, "format": "bibtex"}))
+            .await
+            .expect("bibtex export should succeed");
+
+        assert_eq!(result["format"], "bibtex");
+        assert_eq!(result["count"], 1);
+        let joined = result["joined"].as_str().expect("joined bibtex string");
+        assert!(joined.contains("@"));
+        assert!(joined.contains("Test Driven Research"));
+    }
+
+    #[tokio::test]
+    async fn test_citation_graph_handler_errors_for_missing_paper_id() {
+        let handler = CitationGraphHandler {
+            sources: empty_sources(),
+        };
+
+        let err = handler
+            .execute(json!({}))
+            .await
+            .expect_err("missing paper_id should fail");
+        assert!(err.contains("Missing 'paper_id' parameter"));
+    }
+
+    #[tokio::test]
+    async fn test_recommend_papers_handler_errors_for_missing_paper_id() {
+        let handler = RecommendPapersHandler {
+            sources: empty_sources(),
+        };
+
+        let err = handler
+            .execute(json!({}))
+            .await
+            .expect_err("missing paper_id should fail");
+        assert!(err.contains("Missing 'paper_id' parameter"));
+    }
+
+    #[tokio::test]
+    async fn test_web_search_handler_errors_for_missing_query() {
+        let handler = WebSearchHandler;
+
+        let err = handler
+            .execute(json!({}))
+            .await
+            .expect_err("missing query should fail");
+        assert!(err.contains("Missing 'query' parameter"));
+    }
+
+    #[tokio::test]
+    async fn test_write_paper_handler_errors_for_missing_required_parameter() {
+        let handler = WritePaperHandler;
+
+        let err = handler
+            .execute(json!({}))
+            .await
+            .expect_err("missing papers should fail");
+        assert!(err.contains("Missing or invalid 'papers' parameter"));
+    }
+
+    #[tokio::test]
+    async fn test_deduplicate_papers_handler_strategy_enum_parsing() {
+        let handler = DeduplicatePapersHandler;
+        let first = test_paper("first", "Duplicate Paper", SourceType::Arxiv);
+        let last = test_paper("last", "Duplicate Paper", SourceType::SemanticScholar);
+
+        let first_result = handler
+            .execute(json!({"papers": [first.clone(), last.clone()], "strategy": "first"}))
+            .await
+            .expect("first strategy should succeed");
+        let first_papers = first_result.as_array().expect("first result array");
+        assert_eq!(first_papers.len(), 1);
+        assert_eq!(first_papers[0]["paper_id"], "first");
+
+        let last_result = handler
+            .execute(json!({"papers": [first.clone(), last.clone()], "strategy": "last"}))
+            .await
+            .expect("last strategy should succeed");
+        let last_papers = last_result.as_array().expect("last result array");
+        assert_eq!(last_papers.len(), 1);
+        assert_eq!(last_papers[0]["paper_id"], "last");
+
+        let mark_result = handler
+            .execute(json!({"papers": [first, last], "strategy": "mark"}))
+            .await
+            .expect("mark strategy should succeed");
+        let marked_papers = mark_result.as_array().expect("mark result array");
+        assert_eq!(marked_papers.len(), 2);
     }
 }
