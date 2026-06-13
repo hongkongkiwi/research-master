@@ -75,3 +75,6 @@ lcov.info
 # Git merge conflicts
 *.orig
 *.rej
+
+# MCP tool cache
+.serena/
