@@ -9,7 +9,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 
 ## Overview
 
-Research Master is a comprehensive academic research server that provides unified access to **28 major research repositories and databases**. It implements the Model Context Protocol (MCP) to integrate seamlessly with AI assistants like Claude Desktop, enabling powerful literature search, paper discovery, and citation analysis capabilities.
+Research Master gives AI assistants unified access to **35 research sources** (31 enabled by default) through the Model Context Protocol (MCP). It works with Claude Desktop, Zed, Cursor, and other MCP clients for literature search, paper discovery, download, and citation analysis.
 
 ## Quick Start
 
@@ -54,13 +54,16 @@ See [Tools](docs/tools.md) for all available MCP tools.
 
 ## Features
 
-- **28 Research Sources**: arXiv, Semantic Scholar, OpenAlex, PubMed, PMC, bioRxiv, and [more](docs/sources.md)
-- **Unified Search**: Single query searches across all sources
-- **Smart Source Detection**: Automatically identifies paper IDs (arXiv, PMC, DOI, etc.)
-- **PDF Download**: Save papers to your local filesystem
-- **Citation Analysis**: Find papers that cite or are cited by a paper
-- **Deduplication**: Remove duplicate results across sources
-- **Rate Limiting**: Configurable to avoid API throttling
+- **35 research sources** (31 by default): arXiv, Semantic Scholar, OpenAlex, PubMed, PMC, bioRxiv, DataCite, INSPIRE-HEP, NASA ADS, and [more](docs/sources.md). SciSpace, Connected Papers, WorldWideScience (retired public endpoints) and Google Scholar are opt-in via `--features`
+- **Unified Search**: One query fans out across all enabled sources, with results deduplicated across sources
+- **Smart Source Detection**: Automatically identifies paper IDs (arXiv, PMC, DOI, HAL, IACR, Zenodo, etc.)
+- **PDF Download and Text Extraction**: Save papers locally and extract full text (poppler, with lopdf fallback)
+- **Citation Analysis**: Forward citations, references, related papers, and combined citation graphs
+- **License Filter**: `--license open` keeps only works with a recognized open reuse license
+- **Export and Citation Formatting**: BibTeX, CSV, JSON, RIS export; APA, MLA, Chicago, BibTeX cite styles
+- **Local History Panel**: Browse recent searches and downloads in a local web UI (`research-master panel`)
+- **Honest Failures**: A source missing its API key returns an error naming the key and signup URL instead of empty results
+- **Rate Limiting and Caching**: Per-source configurable rate limits, local response cache, and a `doctor` health check
 
 See [Sources](docs/sources.md) for supported databases, API requirements, and rate limits. [Free API and license notes](docs/free-apis.md) cover DataCite, INSPIRE-HEP, NASA ADS, work licenses, and the local history panel.
 
@@ -90,6 +93,12 @@ research-master download 2301.12345 --source arxiv --output ./papers
 
 # Look up by DOI
 research-master lookup 10.48550/arXiv.2301.12345
+
+# Format a citation
+research-master cite 10.48550/arXiv.1706.03762 --style bibtex
+
+# Check configuration and source health
+research-master doctor
 
 # Start MCP server
 research-master mcp --stdio
