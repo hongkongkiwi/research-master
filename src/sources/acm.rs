@@ -57,8 +57,9 @@ impl Source for AcmSource {
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchResponse, SourceError> {
         if self.api_key.is_none() {
-            tracing::debug!("ACM_API_KEY not set - skipping search");
-            return Ok(SearchResponse::new(Vec::new(), "ACM", &query.query));
+            return Err(SourceError::Other(
+                "ACM_API_KEY is not set. Get a free key at https://dl.acm.org/api".to_string(),
+            ));
         }
 
         let max_results = query.max_results.min(100);

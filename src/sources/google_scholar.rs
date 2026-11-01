@@ -11,7 +11,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use crate::models::{Paper, PaperBuilder, SearchQuery, SearchResponse, SourceType};
+use crate::models::{Paper, SearchQuery, SearchResponse, SourceType};
 use crate::sources::{Source, SourceCapabilities, SourceError};
 use crate::utils::{api_retry_config, with_retry, HttpClient};
 
@@ -69,7 +69,9 @@ impl Source for GoogleScholarSource {
         if !self.enabled {
             return SourceCapabilities::empty();
         }
-        SourceCapabilities::SEARCH | SourceCapabilities::DOI_LOOKUP
+        // Search only: there is no verified DOI lookup. The old get_by_doi
+        // returned a fabricated paper for any 2xx from the search page.
+        SourceCapabilities::SEARCH
     }
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchResponse, SourceError> {
@@ -133,59 +135,6 @@ impl Source for GoogleScholarSource {
         let mut search_response = SearchResponse::new(papers, "Google Scholar", &query.query);
         search_response.total_results = Some(papers_len);
         Ok(search_response)
-    }
-
-    async fn get_by_doi(&self, doi: &str) -> Result<Paper, SourceError> {
-        if !self.enabled {
-            return Err(SourceError::Other(format!(
-                "Google Scholar is disabled. Set {} to enable.",
-                GOOGLE_SCHOLAR_ENABLED_VAR
-            )));
-        }
-
-        // Search by DOI
-        let url = format!(
-            "{}?hl=en&q={}&btnI",
-            GOOGLE_SCHOLAR_URL,
-            urlencoding::encode(doi)
-        );
-
-        let client = Arc::clone(&self.client);
-
-        let response = client
-            .get(&url)
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            )
-            .send()
-            .await
-            .map_err(|e| {
-                SourceError::Network(format!("Failed to lookup DOI in Google Scholar: {}", e))
-            })?;
-
-        if !response.status().is_success() {
-            return Err(SourceError::NotFound(format!(
-                "Paper not found in Google Scholar: {}",
-                doi
-            )));
-        }
-
-        // For DOI lookups, we return a basic paper with the DOI info
-        let clean_doi = doi
-            .replace("https://doi.org/", "")
-            .replace("doi:", "")
-            .trim()
-            .to_string();
-
-        Ok(PaperBuilder::new(
-            clean_doi.clone(),
-            "Paper from Google Scholar".to_string(),
-            format!("https://doi.org/{}", clean_doi),
-            SourceType::GoogleScholar,
-        )
-        .doi(doi)
-        .build())
     }
 }
 

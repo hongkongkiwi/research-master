@@ -177,6 +177,10 @@ impl ToolHandler for SearchPapersHandler {
             tracing::warn!("Could not record search history: {}", error);
         }
         all_results.retain(|paper| license_policy.allows(paper.license.as_deref()));
+        // The same paper arrives from several aggregating sources; keep the
+        // first occurrence so callers are not flooded with duplicates.
+        let all_results =
+            crate::utils::deduplicate_papers(all_results, crate::utils::DuplicateStrategy::First);
         serde_json::to_value(all_results).map_err(|e| e.to_string())
     }
 }

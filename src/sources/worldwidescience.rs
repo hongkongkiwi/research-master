@@ -4,6 +4,11 @@
 //! API documentation: <https://worldwidescience.org/api>
 //!
 //! WorldWideScience is free and requires no API key.
+//!
+//! DEPRECATED: OSTI retired the WorldWideScience service and its host stopped
+//! resolving as of 2026-11-02 (verified). The source stays opt-in for local
+//! builds but is excluded from the default feature set; every request now
+//! fails with a network error.
 
 use async_trait::async_trait;
 use serde::Deserialize;

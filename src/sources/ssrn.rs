@@ -187,15 +187,8 @@ impl Source for SsrnSource {
         })
         .await;
 
-        // Check if we got a blocked/403 error and return empty results silently
-        match &response {
-            Err(SourceError::Api(msg)) if msg.contains("blocked") || msg.contains("403") => {
-                tracing::debug!("SSRN blocked - returning empty results");
-                return Ok(SearchResponse::new(Vec::new(), "SSRN", &query.query));
-            }
-            _ => {}
-        }
-
+        // A Cloudflare/anti-bot block is a failure; propagate it rather than
+        // masking it as "no results".
         let response = response?;
         let html_content = response
             .text()

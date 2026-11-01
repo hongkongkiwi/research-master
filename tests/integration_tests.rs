@@ -222,14 +222,15 @@ async fn test_all_sources_registered() {
         assert!(source_ids.contains(&"unpaywall"));
         assert!(source_ids.contains(&"mdpi"));
         assert!(source_ids.contains(&"jstor"));
-        assert!(source_ids.contains(&"scispace"));
         assert!(source_ids.contains(&"acm"));
-        assert!(source_ids.contains(&"connected_papers"));
         assert!(source_ids.contains(&"doaj"));
-        assert!(source_ids.contains(&"worldwidescience"));
         assert!(source_ids.contains(&"osf"));
         assert!(source_ids.contains(&"base"));
         assert!(source_ids.contains(&"springer"));
+        // Opt-in only: endpoints dead or no public API (not in default features).
+        assert!(!source_ids.contains(&"scispace"));
+        assert!(!source_ids.contains(&"connected_papers"));
+        assert!(!source_ids.contains(&"worldwidescience"));
         if cfg!(feature = "source-google_scholar") {
             assert!(source_ids.contains(&"google_scholar"));
         } else {

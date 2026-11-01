@@ -59,10 +59,15 @@ impl Source for DimensionsSource {
     }
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchResponse, SourceError> {
+        // GraphQL string literals are JSON string literals, so serializing the
+        // user query with serde_json escapes quotes, backslashes and newlines
+        // correctly; hand-rolled escaping previously broke on `\`.
+        let escaped_query = serde_json::to_string(&query.query)
+            .map_err(|e| SourceError::Other(format!("Failed to encode query: {e}")))?;
         let search_query = format!(
             r#"
             {{
-                search(query: "{}", limit: {}) {{
+                search(query: {}, limit: {}) {{
                     id
                     title
                     abstract
@@ -86,7 +91,7 @@ impl Source for DimensionsSource {
                 }}
             }}
             "#,
-            query.query.replace("\"", "\\\""),
+            escaped_query,
             query.max_results.min(100)
         );
 
@@ -137,19 +142,8 @@ impl Source for DimensionsSource {
         })
         .await;
 
-        // Handle API blocking gracefully
-        let response = match response {
-            Ok(r) => r,
-            Err(SourceError::Api(msg)) if msg.contains("blocked") => {
-                tracing::debug!("Dimensions API blocked - returning empty results");
-                return Ok(SearchResponse::new(vec![], "Dimensions", &query.query));
-            }
-            Err(SourceError::Network(_)) => {
-                tracing::debug!("Dimensions network error - returning empty results");
-                return Ok(SearchResponse::new(vec![], "Dimensions", &query.query));
-            }
-            Err(e) => return Err(e),
-        };
+        // A block or network failure is an error, not "no results".
+        let response = response?;
 
         let papers: Result<Vec<Paper>, SourceError> = response
             .data
@@ -159,9 +153,9 @@ impl Source for DimensionsSource {
             .collect();
 
         let papers = papers?;
-        let mut response = SearchResponse::new(papers, "Dimensions", &query.query);
-        response.total_results = Some(response.papers.len());
-        Ok(response)
+        // No reliable total is returned for this query, so leave it unset
+        // rather than reporting the capped page size as the total.
+        Ok(SearchResponse::new(papers, "Dimensions", &query.query))
     }
 
     async fn get_by_doi(&self, doi: &str) -> Result<Paper, SourceError> {

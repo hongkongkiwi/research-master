@@ -53,8 +53,11 @@ impl Source for AdsSource {
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchResponse, SourceError> {
         let Some(api_key) = &self.api_key else {
-            tracing::debug!("ADS_API_KEY not set - skipping search");
-            return Ok(SearchResponse::new(Vec::new(), "NASA ADS", &query.query));
+            // Consistent with get_by_doi: no key is a failure, not "no results".
+            return Err(SourceError::Other(
+                "ADS_API_KEY is not set. Get a free token at https://ui.adsabs.harvard.edu/user/settings/token"
+                    .to_string(),
+            ));
         };
 
         let rows = query.max_results.clamp(1, 100);

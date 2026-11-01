@@ -104,15 +104,9 @@ impl Source for ScispaceSource {
         })
         .await;
 
-        // Handle API unavailability gracefully
-        let response = match response {
-            Ok(r) => r,
-            Err(SourceError::Api(msg)) if msg.contains("unavailable") => {
-                tracing::debug!("SciSpace API unavailable - returning empty results");
-                return Ok(SearchResponse::new(vec![], "SciSpace", &query.query));
-            }
-            Err(e) => return Err(e),
-        };
+        // Handle API unavailability: propagate the failure instead of masking
+        // it as "no results".
+        let response = response?;
 
         let total = response.total_results.unwrap_or(0);
         let papers: Result<Vec<Paper>, SourceError> = response

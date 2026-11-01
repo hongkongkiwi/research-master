@@ -209,15 +209,12 @@ default = [
   "source-unpaywall",
   "source-mdpi",
   "source-jstor",
-  "source-scispace",
   "source-acm",
   "source-citeseerx",
   "source-medrxiv",
   "source-openaire",
   "source-orcid",
-  "source-connected_papers",
   "source-doaj",
-  "source-worldwidescience",
   "source-osf",
   "source-base",
   "source-springer",
@@ -226,6 +223,9 @@ default = [
   "source-inspire",
   "source-ads",
   # google_scholar is NOT included by default - requires GOOGLE_SCHOLAR_ENABLED=true
+  # scispace, connected_papers and worldwidescience are NOT in default:
+  # their public endpoints no longer resolve (verified 2026-11-02) and
+  # Connected Papers has no public REST API. Enable via --features.
 ]
 
 # Convenience feature groups

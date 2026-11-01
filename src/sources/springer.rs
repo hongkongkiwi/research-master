@@ -57,8 +57,10 @@ impl Source for SpringerSource {
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchResponse, SourceError> {
         if self.api_key.is_none() {
-            tracing::debug!("SPRINGER_API_KEY not set - skipping search");
-            return Ok(SearchResponse::new(Vec::new(), "Springer", &query.query));
+            return Err(SourceError::Other(
+                "SPRINGER_API_KEY is not set. Get a free key at https://dev.springernature.com"
+                    .to_string(),
+            ));
         }
 
         let max_results = query.max_results.min(100);

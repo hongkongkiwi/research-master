@@ -108,27 +108,11 @@ impl Source for ConnectedPapersSource {
         })
         .await;
 
-        // Handle API blocking gracefully
-        let response = match response {
-            Ok(r) => r,
-            Err(SourceError::Api(msg)) if msg.contains("blocked") => {
-                tracing::debug!("Connected Papers API blocked - returning empty results");
-                return Ok(SearchResponse::new(
-                    vec![],
-                    "Connected Papers",
-                    &query.query,
-                ));
-            }
-            Err(SourceError::Network(_)) => {
-                tracing::debug!("Connected Papers network error - returning empty results");
-                return Ok(SearchResponse::new(
-                    vec![],
-                    "Connected Papers",
-                    &query.query,
-                ));
-            }
-            Err(e) => return Err(e),
-        };
+        // A block or network failure is an error, not "no results": the caller
+        // must be able to tell the difference. The public endpoint does not
+        // resolve and Connected Papers offers no public REST API, so requests
+        // here are expected to fail.
+        let response = response?;
 
         let total = response.total_results.unwrap_or(0);
         let papers: Result<Vec<Paper>, SourceError> = response

@@ -29,7 +29,7 @@ Research Master MCP supports **28 academic research sources** with different pri
 | [Unpaywall](https://unpaywall.org) | ❌ | ✅ | ❌ | ❌ | ✅ | ❌ |
 | [MDPI](https://mdpi.com) | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
 | [JSTOR](https://www.jstor.org) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| [SciSpace](https://scispace.net) | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| [SciSpace](https://scispace.net) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | [ACM DL](https://dl.acm.org) | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | [Connected Papers](https://www.connectedpapers.com) | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ |
 | [DOAJ](https://doaj.org) | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
@@ -69,11 +69,11 @@ Research Master MCP supports **28 academic research sources** with different pri
 | [Unpaywall](https://unpaywall.org) | Free | No | Unlimited | 1 request/sec | Find open access versions of papers |
 | [MDPI](https://mdpi.com) | Free | No | Unlimited | 1 request/sec | Open access publisher |
 | [JSTOR](https://www.jstor.org) | Paid | Required* | Limited | 1 request/sec | Historical journals, requires institutional access |
-| [SciSpace](https://scispace.net) | Freemium | Optional | Yes | 1 request/sec | Research discovery platform |
+| [SciSpace](https://scispace.net) | Free | No | Unlimited | 1 request/sec | Not in default builds: public endpoint no longer resolves |
 | [ACM DL](https://dl.acm.org) | Paid | Required* | Limited | 3 requests/sec | Computer science, free API key available |
-| [Connected Papers](https://www.connectedpapers.com) | Free | No | Unlimited | 1 request/sec | Related paper discovery |
+| [Connected Papers](https://www.connectedpapers.com) | Free | No | Unlimited | 1 request/sec | Not in default builds: no public REST API |
 | [DOAJ](https://doaj.org) | Free | No | Unlimited | 1 request/sec | Quality open access journals |
-| [WorldWideScience](https://www.worldwidescience.org) | Free | No | Unlimited | 1 request/sec | Global science gateway |
+| [WorldWideScience](https://www.worldwidescience.org) | Free | No | Unlimited | 1 request/sec | Not in default builds: service retired, host no longer resolves |
 | [OSF Preprints](https://osf.io/preprints) | Free | No | Unlimited | 1 request/sec | Open Science Framework |
 | [BASE](https://www.base-search.net) | Free | No | Unlimited | 1 request/sec | Bielefeld Academic Search Engine |
 | [Springer](https://link.springer.com) | Paid | Required* | Limited | 1 request/sec | Academic publisher, some open access |
