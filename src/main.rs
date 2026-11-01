@@ -805,7 +805,10 @@ fn print_env_vars() {
     println!("API Keys:");
     println!("  SEMANTIC_SCHOLAR_API_KEY    API key for Semantic Scholar (higher rate limits)");
     println!("  CORE_API_KEY                API key for CORE service");
-    println!("  OPENALEX_EMAIL              Email for OpenAlex 'polite pool' access");
+    println!("  OPENALEX_API_KEY            Free key for OpenAlex's own daily budget (openalex.org/settings/api)");
+    println!(
+        "  OPENALEX_EMAIL              Email identifying requests to OpenAlex (metadata only)"
+    );
     println!();
     println!("Source-Specific Rate Limits:");
     println!("  SEMANTIC_SCHOLAR_RATE_LIMIT  Semantic Scholar requests per second (default: 1)");

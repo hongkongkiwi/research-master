@@ -109,7 +109,8 @@ export RESEARCH_MASTER_DEFAULT_DISABLED_SOURCES="biorxiv,pmc,pubmed"
 |----------|-------------|
 | `SEMANTIC_SCHOLAR_API_KEY` | API key for Semantic Scholar (higher rate limits) |
 | `CORE_API_KEY` | API key for CORE service |
-| `OPENALEX_EMAIL` | Email for OpenAlex "polite pool" access |
+| `OPENALEX_EMAIL` | Email identifying the caller to OpenAlex (metadata only; the polite pool was retired) |
+| `OPENALEX_API_KEY` | Free API key for OpenAlex's own daily budget; keyless list/search calls share a small per-IP allowance. Create at openalex.org/settings/api |
 | `IEEEXPLORE_API_KEY` | API key for IEEE Xplore |
 | `JSTOR_API_KEY` | API key for JSTOR |
 | `ACM_API_KEY` | API key for ACM Digital Library |

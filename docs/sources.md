@@ -91,7 +91,7 @@ The following sources are completely free to use without any API key requirement
 
 **PubMed** and **PMC** are NIH-funded databases providing free access to biomedical and life sciences literature. PubMed contains abstracts and citations, while PMC provides full-text articles. Both are completely free and require no API key.
 
-**OpenAlex** is an open infrastructure funded by various academic organizations, providing a comprehensive catalog of scholarly papers, authors, institutions, and more. While completely free, providing an email address via `OPENALEX_EMAIL` gives access to the "polite pool" with better rate limits.
+**OpenAlex** is an open infrastructure funded by various academic organizations, providing a comprehensive catalog of scholarly papers, authors, institutions, and more. List and search endpoints are metered: keyless calls share a small free daily budget per IP address, while a free API key (`OPENALEX_API_KEY`, created at openalex.org/settings/api) gets its own larger daily budget. The retired mailto "polite pool" is gone; `OPENALEX_EMAIL` now only identifies your requests.
 
 **HAL** is France's national open access repository, providing free access to academic papers from French institutions. It requires no API key and offers unlimited queries.
 

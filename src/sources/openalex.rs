@@ -16,10 +16,16 @@ const OPENALEX_API_BASE: &str = "https://api.openalex.org";
 /// OpenAlex research source
 ///
 /// Uses the OpenAlex REST API.
+///
+/// OpenAlex meters list/filter endpoints: keyless requests share a small
+/// free daily budget per IP address, while a free API key gets its own
+/// larger budget. Set `OPENALEX_API_KEY` to attach one; `OPENALEX_EMAIL`
+/// is kept as metadata only, since the mailto polite pool was retired.
 #[derive(Debug, Clone)]
 pub struct OpenAlexSource {
     client: Arc<HttpClient>,
     email: Option<String>,
+    api_key: Option<String>,
 }
 
 impl OpenAlexSource {
@@ -28,6 +34,9 @@ impl OpenAlexSource {
         Ok(Self {
             client: Arc::new(HttpClient::new()?),
             email: std::env::var("OPENALEX_EMAIL").ok(),
+            api_key: std::env::var("OPENALEX_API_KEY")
+                .ok()
+                .filter(|k| !k.is_empty()),
         })
     }
 
@@ -43,21 +52,30 @@ impl OpenAlexSource {
         Ok(Self {
             client: Arc::new(HttpClient::with_user_agent(&user_agent)?),
             email: Some(email),
+            api_key: std::env::var("OPENALEX_API_KEY")
+                .ok()
+                .filter(|k| !k.is_empty()),
         })
     }
 
-    /// Build request URL
+    /// Build request URL, attaching credential params to every endpoint
     fn build_url(&self, endpoint: &str) -> String {
-        format!("{}{}", OPENALEX_API_BASE, endpoint)
+        self.add_credentials_if_present(&format!("{}{}", OPENALEX_API_BASE, endpoint))
     }
 
-    /// Add email to request URL if available (for polite pool)
-    fn add_email_if_present(&self, url: &str) -> String {
-        if let Some(ref email) = self.email {
-            format!("{}&mailto={}", url, urlencoding::encode(email))
-        } else {
-            url.to_string()
+    /// Attach credential params to a request URL.
+    ///
+    /// `api_key` carries the metered free budget; `mailto` no longer grants
+    /// the polite pool but identifies the caller, so it stays when set.
+    fn add_credentials_if_present(&self, url: &str) -> String {
+        let mut url = url.to_string();
+        if let Some(ref key) = self.api_key {
+            url = format!("{}&api_key={}", url, urlencoding::encode(key));
         }
+        if let Some(ref email) = self.email {
+            url = format!("{}&mailto={}", url, urlencoding::encode(email));
+        }
+        url
     }
 
     /// Parse OpenAlex paper data
@@ -146,7 +164,7 @@ impl Source for OpenAlexSource {
             }
         }
 
-        url = self.add_email_if_present(&url);
+        url = self.add_credentials_if_present(&url);
 
         // Clone values for retry closure
         let client = Arc::clone(&self.client);
