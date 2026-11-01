@@ -121,6 +121,15 @@ impl ToolHandler for SearchPapersHandler {
         if let Some(ref cat) = category {
             search_query = search_query.category(cat);
         }
+        // Sources that index full text (Europe PMC, OpenAlex) restrict to
+        // full-text-available works when this filter is set.
+        if args
+            .get("fulltext")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            search_query = search_query.filter("fulltext", "true");
+        }
         let search_query = Arc::new(search_query);
 
         let futures: Vec<_> = self
@@ -252,11 +261,12 @@ impl ToolHandler for GetPaperHandler {
             .and_then(|v| v.as_str())
             .ok_or("Missing 'paper_id' parameter")?;
         let source_override = args.get("source").and_then(|v| v.as_str());
+        let enrich = args.get("enrich").and_then(|v| v.as_bool()).unwrap_or(true);
         let source = self.find_source(paper_id, source_override)?;
 
         // Try direct lookup first (more efficient and accurate)
         match source.get_by_id(paper_id).await {
-            Ok(paper) => return serde_json::to_value(&paper).map_err(|e| e.to_string()),
+            Ok(paper) => return enrich_paper(paper, enrich).await,
             Err(e) => {
                 tracing::debug!(
                     "get_by_id failed for {} on {}: {}",
@@ -270,7 +280,7 @@ impl ToolHandler for GetPaperHandler {
         // Try DOI lookup if the paper_id looks like a DOI
         if paper_id.starts_with("10.") {
             match source.get_by_doi(paper_id).await {
-                Ok(paper) => return serde_json::to_value(&paper).map_err(|e| e.to_string()),
+                Ok(paper) => return enrich_paper(paper, enrich).await,
                 Err(e) => {
                     tracing::debug!(
                         "get_by_doi failed for {} on {}: {}",
@@ -291,8 +301,105 @@ impl ToolHandler for GetPaperHandler {
         if response.papers.is_empty() {
             return Err(format!("Paper '{}' not found in {}", paper_id, source.id()));
         }
-        serde_json::to_value(&response.papers[0]).map_err(|e| e.to_string())
+        enrich_paper(response.papers[0].clone(), enrich).await
     }
+}
+
+/// Format a paper as an in-text citation in any archived CSL style.
+#[derive(Debug)]
+pub struct CslCitationHandler;
+
+#[async_trait::async_trait]
+impl ToolHandler for CslCitationHandler {
+    async fn execute(&self, args: Value) -> Result<Value, String> {
+        let style = args
+            .get("style")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing 'style' parameter")?;
+        let paper: crate::models::Paper = args
+            .get("paper")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .ok_or(
+                "Missing or invalid 'paper' parameter (a paper object from get_paper or search_papers)",
+            )?;
+        let citation = crate::utils::csl::format_csl_citation(&paper, style)?;
+        Ok(serde_json::json!({
+            "style": style,
+            "citation": citation,
+        }))
+    }
+}
+
+/// Best-effort enrichment of a paper record with free external metadata.
+///
+/// TLDRs come from Semantic Scholar's keyless graph API; retraction status
+/// from OpenAlex single-work lookups (via the evidence module). Both run in
+/// parallel with short timeouts; failures are logged and ignored so the base
+/// record is never lost to an enrichment outage.
+async fn enrich_paper(paper: crate::models::Paper, enrich: bool) -> Result<Value, String> {
+    let mut value = serde_json::to_value(&paper).map_err(|e| e.to_string())?;
+    let Some(doi) = paper.doi.clone().filter(|d| d.starts_with("10.")) else {
+        return Ok(value);
+    };
+    if !enrich {
+        return Ok(value);
+    }
+    let client = match crate::utils::HttpClient::new() {
+        Ok(client) => client,
+        Err(e) => return Err(e.to_string()),
+    };
+    let (tldr, retraction) = tokio::join!(
+        fetch_s2_tldr(&client, &doi),
+        crate::utils::evidence::check_retraction(&client, &doi),
+    );
+    if let Some(obj) = value.as_object_mut() {
+        match tldr {
+            Ok(Some(tldr)) => {
+                obj.insert("tldr".to_string(), Value::String(tldr));
+            }
+            Ok(None) => {}
+            Err(e) => tracing::debug!("TLDR enrichment failed for {doi}: {e}"),
+        }
+        match retraction {
+            Ok(info) if info.is_retracted => {
+                obj.insert("retracted".to_string(), Value::Bool(true));
+                if let Some(date) = info.retraction_date {
+                    obj.insert("retraction_date".to_string(), Value::String(date));
+                }
+            }
+            Ok(_) => {}
+            Err(e) => tracing::debug!("Retraction lookup failed for {doi}: {e}"),
+        }
+    }
+    Ok(value)
+}
+
+async fn fetch_s2_tldr(
+    client: &crate::utils::HttpClient,
+    doi: &str,
+) -> Result<Option<String>, String> {
+    let url = format!(
+        "https://api.semanticscholar.org/graph/v1/paper/DOI:{}?fields=tldr",
+        urlencoding::encode(doi)
+    );
+    let response =
+        tokio::time::timeout(std::time::Duration::from_secs(10), client.get(&url).send())
+            .await
+            .map_err(|e| format!("timeout: {e}"))?
+            .map_err(|e| format!("request failed: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("status {}", response.status()));
+    }
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|e| format!("bad JSON: {e}"))?;
+    Ok(body
+        .get("tldr")
+        .and_then(|t| t.get("text"))
+        .and_then(|t| t.as_str())
+        .map(str::to_string)
+        .filter(|t| !t.is_empty()))
 }
 
 impl GetPaperHandler {
@@ -342,7 +449,6 @@ impl ToolHandler for DownloadPaperHandler {
         {
             return serde_json::to_value(result).map_err(|e| e.to_string());
         }
-
         let fallback_order = ["openaire", "core", "europe_pmc", "pmc", "unpaywall"];
         for fallback_id in &fallback_order {
             if source.id() == *fallback_id {
@@ -366,13 +472,90 @@ impl ToolHandler for DownloadPaperHandler {
             }
         }
 
-        Err(format!(
-            "Failed to download '{}' from any source (tried {} and OA fallbacks: {})",
-            paper_id,
-            source.id(),
-            fallback_order.join(", ")
-        ))
+        // Every source-level download failed; resolve through Unpaywall's
+        // ranked best_oa_location as the final fallback.
+        match unpaywall_pdf_fallback(&self.sources, paper_id, None, output_path).await {
+            Ok(result) => serde_json::to_value(result).map_err(|e| e.to_string()),
+            Err(unpaywall_error) => Err(format!(
+                "Failed to download '{}' from any source (tried {} and OA fallbacks: {}). \
+                 OA resolution: {}",
+                paper_id,
+                source.id(),
+                fallback_order.join(", "),
+                unpaywall_error
+            )),
+        }
     }
+}
+
+/// Resolve an OA PDF through Unpaywall and download it directly.
+///
+/// Last resort after every source's own download failed: Unpaywall ranks
+/// `best_oa_location` per DOI, which the source adapters surface as pdf_url.
+async fn unpaywall_pdf_fallback(
+    sources: &Arc<Vec<Arc<dyn crate::sources::Source>>>,
+    paper_id: &str,
+    doi_hint: Option<&str>,
+    output_path: &str,
+) -> Result<crate::models::DownloadResult, String> {
+    let unpaywall = sources
+        .iter()
+        .find(|s| s.id() == "unpaywall")
+        .ok_or("Unpaywall source not available")?;
+
+    let candidates = [doi_hint.map(str::to_string), Some(paper_id.to_string())];
+    let mut paper = None;
+    for candidate in candidates.iter().flatten() {
+        if !candidate.starts_with("10.") {
+            continue;
+        }
+        if let Ok(found) = unpaywall.get_by_doi(candidate).await {
+            paper = Some(found);
+            break;
+        }
+    }
+    let paper = paper.ok_or("Unpaywall has no open-access record for this DOI")?;
+    let pdf_url = paper
+        .pdf_url
+        .ok_or("Unpaywall found an OA record but no direct PDF URL")?;
+
+    let file_name = match crate::utils::sanitize_filename(&paper.title) {
+        Ok(name) => format!("{name}.pdf"),
+        Err(_) => format!(
+            "paper-{}.pdf",
+            crate::utils::sanitize_paper_id(paper_id).unwrap_or_else(|_| "unknown".to_string())
+        ),
+    };
+    let dir = std::path::Path::new(output_path);
+    let path = dir.join(&file_name);
+    let path_str = path.to_string_lossy().to_string();
+
+    let client = crate::utils::HttpClient::new().map_err(|e| e.to_string())?;
+    let response = client
+        .get(&pdf_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch OA PDF: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "OA PDF fetch returned status {}",
+            response.status()
+        ));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read OA PDF body: {e}"))?;
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|e| format!("Failed to create output dir: {e}"))?;
+    tokio::fs::write(&path, &bytes)
+        .await
+        .map_err(|e| format!("Failed to write PDF: {e}"))?;
+    Ok(crate::models::DownloadResult::success(
+        path_str,
+        bytes.len() as u64,
+    ))
 }
 
 impl DownloadPaperHandler {
@@ -406,10 +589,41 @@ impl ToolHandler for ReadPaperHandler {
             .and_then(|v| v.as_str())
             .ok_or("Missing 'paper_id' parameter")?;
         let source_override = args.get("source").and_then(|v| v.as_str());
+        // Bounded by default: full PDF text dumps blow up LLM contexts, the
+        // most common complaint class across competitor servers.
+        let max_chars = args
+            .get("max_chars")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(12000) as usize;
+        let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let return_full_text = args
+            .get("return_full_text")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let source = self.find_source(paper_id, source_override)?;
         let request = crate::models::ReadRequest::new(paper_id, "./downloads");
         let result = source.read(&request).await.map_err(|e| e.to_string())?;
-        serde_json::to_value(result).map_err(|e| e.to_string())
+        let total_chars = result.text.chars().count();
+        let (text, offset, truncated, next_start) = if return_full_text {
+            (result.text.clone(), 0usize, false, None)
+        } else {
+            let start = offset.min(total_chars);
+            let slice: String = result.text.chars().skip(start).take(max_chars).collect();
+            let truncated = start + max_chars < total_chars;
+            let next_start = truncated.then(|| start + max_chars);
+            (slice, start, truncated, next_start)
+        };
+        Ok(serde_json::json!({
+            "paper_id": paper_id,
+            "source": source.id(),
+            "success": result.success,
+            "error": result.error,
+            "total_chars": total_chars,
+            "offset": offset,
+            "truncated": truncated,
+            "next_start": next_start,
+            "text": text,
+        }))
     }
 }
 

@@ -69,6 +69,23 @@ impl McpServer {
             builder = builder.tool(tool_handler.name.clone(), tool_handler);
         }
 
+        // Built-in prompts: context scaffolding that guides agents through the
+        // multi-tool flows each prompt encodes.
+        builder = builder
+            .prompt(
+                "literature_review",
+                crate::mcp::prompts::LiteratureReviewPrompt,
+            )
+            .prompt(
+                "deep_paper_analysis",
+                crate::mcp::prompts::DeepPaperAnalysisPrompt,
+            )
+            .prompt(
+                "research_discovery",
+                crate::mcp::prompts::ResearchDiscoveryPrompt,
+            )
+            .prompt("citation_audit", crate::mcp::prompts::CitationAuditPrompt);
+
         builder.build()
     }
 
@@ -91,19 +108,16 @@ impl McpServer {
     /// Run the server in HTTP/SSE mode
     ///
     /// This starts an HTTP server that uses Server-Sent Events (SSE) for real-time
-    /// communication with MCP clients.
+    /// communication with MCP clients. When `RESEARCH_MASTER_HTTP_TOKEN` is set,
+    /// requests must present that bearer token or they are rejected.
     pub async fn run_http(&self, addr: &str) -> Result<(SocketAddr, JoinHandle<()>), pmcp::Error> {
-        tracing::info!("Starting MCP server in HTTP/SSE mode on {}", addr);
-
-        let socket_addr: SocketAddr = addr
-            .parse()
-            .map_err(|e| Error::invalid_params(format!("Invalid address: {}", e)))?;
-
-        // Create the HTTP server with default config
-        let http_server = StreamableHttpServer::new(socket_addr, self.server.clone());
-
-        // Start the server
-        http_server.start().await
+        let config = StreamableHttpServerConfig {
+            http_middleware: Some(std::sync::Arc::new(
+                crate::mcp::http_auth::BearerTokenMiddleware::chain_from_env().unwrap_or_default(),
+            )),
+            ..Default::default()
+        };
+        self.run_http_with_config(addr, config).await
     }
 
     /// Run the server in HTTP/SSE mode with custom configuration

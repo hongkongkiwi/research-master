@@ -38,8 +38,13 @@ impl EuropePmcSource {
 
     /// Build search URL
     fn build_search_url(&self, query: &SearchQuery) -> String {
+        let mut text_query = query.query.clone();
+        // Full-text filter: restrict to works whose full text is indexed.
+        if query.filters.get("fulltext").map(|v| v == "true") == Some(true) {
+            text_query.push_str(" AND HAS_FT:y");
+        }
         let mut params = vec![
-            ("query".to_string(), query.query.clone()),
+            ("query".to_string(), text_query),
             ("resultType".to_string(), "core".to_string()),
             ("format".to_string(), "json".to_string()),
             ("pageSize".to_string(), query.max_results.to_string()),

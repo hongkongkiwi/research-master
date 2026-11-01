@@ -141,11 +141,21 @@ impl Source for OpenAlexSource {
     }
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchResponse, SourceError> {
-        let mut url = format!(
-            "/works?search={}&per-page={}",
-            urlencoding::encode(&query.query),
-            query.max_results
-        );
+        // Full-text mode searches inside works via the fulltext.search filter
+        // instead of the title/abstract search param.
+        let mut url = if query.filters.get("fulltext").map(|v| v == "true") == Some(true) {
+            format!(
+                "/works?filter=fulltext.search:{}&per-page={}",
+                urlencoding::encode(&query.query),
+                query.max_results
+            )
+        } else {
+            format!(
+                "/works?search={}&per-page={}",
+                urlencoding::encode(&query.query),
+                query.max_results
+            )
+        };
 
         // Add year filter if specified
         if let Some(year) = &query.year {

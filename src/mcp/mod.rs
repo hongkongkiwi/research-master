@@ -48,6 +48,13 @@
 //!
 //! [pmcp]: https://docs.rs/pmcp
 
+pub mod handlers_evidence;
+pub mod handlers_grobid;
+pub mod handlers_library;
+pub mod handlers_reading;
+pub mod handlers_watch;
+pub mod http_auth;
+pub mod prompts;
 pub mod server;
 mod tools;
 pub mod unified_tools;

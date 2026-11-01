@@ -106,6 +106,10 @@ impl ToolRegistry {
                         "type": "string",
                         "description": "Category/subject filter"
                     },
+                    "fulltext": {
+                        "type": "boolean",
+                        "description": "Restrict to works whose full text is indexed and search inside it (Europe PMC, OpenAlex). Default false."
+                    },
                     "license": {
                         "type": "string",
                         "enum": ["any", "open", "ignore"],
@@ -153,7 +157,7 @@ impl ToolRegistry {
         // 3. get_paper - Get paper metadata with auto-detection
         self.register(Tool {
             name: "get_paper".to_string(),
-            description: "Get detailed metadata for a specific paper. Source is auto-detected from paper ID format.".to_string(),
+            description: "Get detailed metadata for a specific paper. Enriches with a Semantic Scholar TLDR and reports retraction status when a DOI is present. Source is auto-detected from paper ID format.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -164,6 +168,11 @@ impl ToolRegistry {
                     "source": {
                         "type": "string",
                         "description": "Override auto-detection and use specific source"
+                    },
+                    "enrich": {
+                        "type": "boolean",
+                        "description": "Fetch the Semantic Scholar TLDR for the DOI (default true). Disable for faster bulk lookups.",
+                        "default": true
                     }
                 },
                 "required": ["paper_id"]
@@ -209,7 +218,7 @@ impl ToolRegistry {
         // 5. read_paper - PDF text extraction with auto-detection
         self.register(Tool {
             name: "read_paper".to_string(),
-            description: "Extract and return the full text content from a paper PDF. Source is auto-detected from paper ID format. Requires poppler to be installed.".to_string(),
+            description: "Extract text from a paper PDF, bounded to 12000 characters per call. Paginate with the offset from next_start, or pass return_full_text for the whole document. Source is auto-detected from paper ID format. Requires poppler.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -220,6 +229,21 @@ impl ToolRegistry {
                     "source": {
                         "type": "string",
                         "description": "Override auto-detection and use specific source"
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Maximum characters returned per call (default 12000)",
+                        "default": 12000
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Character offset to start from (use next_start from the previous call)",
+                        "default": 0
+                    },
+                    "return_full_text": {
+                        "type": "boolean",
+                        "description": "Return the entire text unbounded. Only when you really need it: large PDFs overflow LLM contexts.",
+                        "default": false
                     }
                 },
                 "required": ["paper_id"]
@@ -556,6 +580,243 @@ impl ToolRegistry {
             }),
             handler: Arc::new(WebSearchHandler),
         });
+
+        // Evidence: smart-citation tallies plus retraction lookup.
+        self.register(super::handlers_evidence::get_citation_tallies_tool());
+
+        // CSL citation formatting for any archived style.
+        self.register(Tool {
+            name: "format_citation_style".to_string(),
+            description: "Format a paper as an in-text citation in any CSL style from the Zotero style archive (thousands of styles: nature, ieee, vancouver, chicago-author-date, ...).".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "paper": {
+                        "type": "object",
+                        "description": "A paper object as returned by get_paper or search_papers"
+                    },
+                    "style": {
+                        "type": "string",
+                        "description": "CSL style name, e.g. 'nature', 'ieee', 'vancouver', 'chicago-author-date'. See https://www.zotero.org/styles"
+                    }
+                },
+                "required": ["paper", "style"]
+            }),
+            handler: Arc::new(super::unified_tools::CslCitationHandler),
+        });
+
+        // arXiv topic watches: saved queries with new-paper alerts.
+        self.register(Tool {
+            name: "watch_topic".to_string(),
+            description: "Save a topic watch: later check_alerts calls surface new arXiv papers matching the query since the last check.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Topic query (arXiv 'all:' field syntax)" }
+                },
+                "required": ["query"]
+            }),
+            handler: Arc::new(super::handlers_watch::WatchTopicHandler),
+        });
+        self.register(Tool {
+            name: "list_watches".to_string(),
+            description: "List saved topic watches with their last-checked timestamps.".to_string(),
+            input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+            handler: Arc::new(super::handlers_watch::ListWatchesHandler),
+        });
+        self.register(Tool {
+            name: "check_alerts".to_string(),
+            description: "Check one watch or all watches for new arXiv papers since the last check, returning any new papers and persisting the check.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Check only this saved query (default: check all)" },
+                    "max_results": { "type": "integer", "description": "Max papers fetched per watch (default 20)", "default": 20 }
+                }
+            }),
+            handler: Arc::new(super::handlers_watch::CheckAlertsHandler::default()),
+        });
+        self.register(Tool {
+            name: "unwatch_topic".to_string(),
+            description: "Remove a saved topic watch.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "The saved query to remove" }
+                },
+                "required": ["query"]
+            }),
+            handler: Arc::new(super::handlers_watch::UnwatchTopicHandler),
+        });
+
+        // GROBID: PDF structure extraction against a self-hosted service.
+        self.register(Tool {
+            name: "extract_pdf_references".to_string(),
+            description: "Extract the references of a local PDF as structured papers using a self-hosted GROBID service. Set GROBID_URL (default http://localhost:8070), e.g. docker run --rm -p 8070:8070 lfoppiano/grobid:0.8.0".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pdf_path": { "type": "string", "description": "Path to a local PDF file" }
+                },
+                "required": ["pdf_path"]
+            }),
+            handler: Arc::new(super::handlers_grobid::ExtractReferencesHandler),
+        });
+        self.register(Tool {
+            name: "extract_pdf_header".to_string(),
+            description: "Extract header metadata (title, authors, year, DOI, abstract) from a local PDF using a self-hosted GROBID service. Set GROBID_URL (default http://localhost:8070).".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pdf_path": { "type": "string", "description": "Path to a local PDF file" }
+                },
+                "required": ["pdf_path"]
+            }),
+            handler: Arc::new(super::handlers_grobid::ExtractPaperHeaderHandler),
+        });
+
+        // Section-aware reading over extracted PDF text, and arXiv LaTeX.
+        self.register(Tool {
+            name: "get_paper_outline".to_string(),
+            description: "Extract a section outline (title, offsets, preview) from a paper's PDF text. Combine with read_paper_section to read only the sections that matter.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "paper_id": { "type": "string", "description": "Paper identifier" },
+                    "source": { "type": "string", "description": "Override auto-detection and use specific source" }
+                },
+                "required": ["paper_id"]
+            }),
+            handler: Arc::new(super::handlers_reading::GetPaperOutlineHandler {
+                sources: sources.clone(),
+            }),
+        });
+        self.register(Tool {
+            name: "read_paper_section".to_string(),
+            description: "Read one section of a paper's PDF text by index (from get_paper_outline) or exact title. Bounded to max_chars with pagination.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "paper_id": { "type": "string", "description": "Paper identifier" },
+                    "source": { "type": "string", "description": "Override auto-detection and use specific source" },
+                    "section": { "description": "0-based section index or exact section title", "type": ["integer", "string"] },
+                    "max_chars": { "type": "integer", "description": "Maximum characters (default 12000)", "default": 12000 }
+                },
+                "required": ["paper_id", "section"]
+            }),
+            handler: Arc::new(super::handlers_reading::ReadPaperSectionHandler {
+                sources: sources.clone(),
+            }),
+        });
+        self.register(Tool {
+            name: "get_paper_latex".to_string(),
+            description: "Fetch the LaTeX source of an arXiv paper (reliable for equations, unlike PDF extraction). Returns the file list and the main .tex file.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "arxiv_id": { "type": "string", "description": "arXiv identifier (e.g. '2310.12345', 'arXiv:2310.12345v2')" }
+                },
+                "required": ["arxiv_id"]
+            }),
+            handler: Arc::new(super::handlers_reading::GetPaperLatexHandler),
+        });
+
+        // Local library: persistent saved papers with collections, tags,
+        // notes and retrieval scoring.
+        self.register_library_tools();
+    }
+
+    /// Register the saved-papers library tools.
+    fn register_library_tools(&mut self) {
+        self.register(Tool {
+            name: "library_add".to_string(),
+            description: "Save a paper to the local library (JSONL at the user config dir). Re-saving the same DOI or paper_id updates its collection and tags; notes are preserved.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "paper": {
+                        "type": "object",
+                        "description": "A paper object as returned by get_paper or search_papers"
+                    },
+                    "paper_id": {
+                        "type": "string",
+                        "description": "Alternative to a full paper object: the paper id"
+                    },
+                    "doi": {
+                        "type": "string",
+                        "description": "Alternative to a full paper object: the DOI"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Title when constructing a paper from paper_id/doi"
+                    },
+                    "collection": {
+                        "type": "string",
+                        "description": "Optional collection name"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional tags"
+                    }
+                }
+            }),
+            handler: Arc::new(super::handlers_library::LibraryAddHandler),
+        });
+        self.register(Tool {
+            name: "library_list".to_string(),
+            description: "List saved papers, newest first. Optionally filter by collection.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "collection": { "type": "string", "description": "Only papers in this collection" }
+                }
+            }),
+            handler: Arc::new(super::handlers_library::LibraryListHandler),
+        });
+        self.register(Tool {
+            name: "library_remove".to_string(),
+            description: "Remove a saved paper by id or DOI.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Paper id or DOI" },
+                    "collection": { "type": "string", "description": "Only remove from this collection" }
+                },
+                "required": ["id"]
+            }),
+            handler: Arc::new(super::handlers_library::LibraryRemoveHandler),
+        });
+        self.register(Tool {
+            name: "library_search".to_string(),
+            description:
+                "Search saved papers by keywords (TF-IDF style scoring with fuzzy term matching)."
+                    .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Keyword query" },
+                    "collection": { "type": "string", "description": "Restrict to a collection" },
+                    "limit": { "type": "integer", "description": "Maximum matches (default 10)" }
+                },
+                "required": ["query"]
+            }),
+            handler: Arc::new(super::handlers_library::LibrarySearchHandler),
+        });
+        self.register(Tool {
+            name: "library_ask".to_string(),
+            description: "Retrieval over saved papers: returns the most relevant saved papers for a question with their abstracts and the terms that matched. This is keyword retrieval, not generated synthesis.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "question": { "type": "string", "description": "Question to match against saved papers" },
+                    "collection": { "type": "string", "description": "Restrict to a collection" },
+                    "top_k": { "type": "integer", "description": "How many papers to return (default 5)" }
+                },
+                "required": ["question"]
+            }),
+            handler: Arc::new(super::handlers_library::LibraryAskHandler),
+        });
     }
 
     /// Register a tool
@@ -655,7 +916,7 @@ mod tests {
         let names: std::collections::HashSet<&str> =
             tools.iter().map(|tool| tool.name.as_str()).collect();
 
-        assert_eq!(tools.len(), 18);
+        assert_eq!(tools.len(), 34);
         for expected in [
             "search_papers",
             "search_by_author",

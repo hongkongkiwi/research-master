@@ -580,6 +580,22 @@ fn expected_mcp_tool_names() -> Vec<&'static str> {
         "recommend_papers",
         "write_paper",
         "web_search",
+        "get_citation_tallies",
+        "get_paper_outline",
+        "read_paper_section",
+        "get_paper_latex",
+        "library_add",
+        "library_list",
+        "library_remove",
+        "library_search",
+        "library_ask",
+        "format_citation_style",
+        "watch_topic",
+        "list_watches",
+        "check_alerts",
+        "unwatch_topic",
+        "extract_pdf_references",
+        "extract_pdf_header",
     ]
 }
 

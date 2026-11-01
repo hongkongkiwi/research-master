@@ -235,9 +235,36 @@ Claude: [Uses lookup_by_doi with doi="10.48550/arXiv.1706.03762"]
 
 The unified tools automatically detect the appropriate source, so you don't need to remember which source has which paper. You can simply provide the paper ID, DOI, or search query, and the tool handles the rest.
 
+## Reading and Evidence Tools
+
+- `get_paper_outline` / `read_paper_section`: extract a section outline from a paper's PDF text, then read one section at a time (bounded to 12000 characters per call).
+- `get_paper_latex`: fetch the LaTeX source of an arXiv paper, the reliable path for equations.
+- `get_citation_tallies`: Scite-style counts (supporting / contradicting / mentioning) per DOI, plus OpenAlex retraction status.
+- `extract_pdf_references` / `extract_pdf_header`: parse a local PDF's references or header metadata via a self-hosted GROBID service (`GROBID_URL`, default http://localhost:8070).
+
+## Local Library
+
+- `library_add` / `library_list` / `library_remove`: persistent saved papers (JSONL at the user config dir) with optional collections and tags; re-saving within the same collection updates in place.
+- `library_search` / `library_ask`: keyword retrieval over saved papers with fuzzy term matching and matched-term reporting. Retrieval only, no generated synthesis.
+
+## Watches
+
+- `watch_topic` / `list_watches` / `check_alerts` / `unwatch_topic`: save topic queries against the arXiv announcement feed and poll for new papers since the last check. State is JSONL at the user config dir.
+
+## Citation Styles and Prompts
+
+- `format_citation_style`: in-text citation in any CSL style from the Zotero archive (e.g. `nature`, `ieee`, `vancouver`), powered by hayagriva.
+- Built-in MCP prompts: `literature_review`, `deep_paper_analysis`, `research_discovery`, `citation_audit`. Clients list them via the standard prompts API.
+
+## Env Overrides
+
+- `RESEARCH_MASTER_HTTP_TOKEN`: bearer token required on every request to `mcp --http` when set.
+- `RESEARCH_MASTER_LIBRARY_PATH`, `RESEARCH_MASTER_WATCHES_PATH`: directory overrides for the JSONL stores.
+
 ## Related Documentation
 
 - [Sources](sources.md) - Supported research sources
+- [Free APIs and licenses](free-apis.md) - API access notes and license policy
 - [Usage](usage.md) - CLI commands and options
 - [MCP Clients](mcp-clients.md) - Client configuration
 - [Configuration](configuration.md) - Environment variables

@@ -52,6 +52,15 @@ mod streaming;
 mod update;
 mod validate;
 
+pub mod library;
+pub use library::{LibraryEntry, PaperLibrary};
+pub mod csl;
+pub mod evidence;
+pub mod grobid;
+pub mod latex;
+pub mod sections;
+pub mod watch;
+
 pub use streaming::{
     collect_papers, filter_by_year, paper_stream, ConcurrentPaperStream, FilterByYearStream,
     SkipStream, TakeStream,

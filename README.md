@@ -58,7 +58,10 @@ See [Tools](docs/tools.md) for all available MCP tools.
 - **Unified Search**: One query fans out across all enabled sources, with results deduplicated across sources
 - **Smart Source Detection**: Automatically identifies paper IDs (arXiv, PMC, DOI, HAL, IACR, Zenodo, etc.)
 - **PDF Download and Text Extraction**: Save papers locally and extract full text (poppler, with lopdf fallback)
-- **Citation Analysis**: Forward citations, references, related papers, and combined citation graphs
+- **Citation Analysis and Evidence**: Forward citations, references, related papers, citation graphs, Scite-style tallies and retraction flags
+- **Bounded Reading**: Section outlines and per-section reads, plus arXiv LaTeX source, that stay within LLM context limits
+- **Local Library and Watches**: Save papers to collections, search them, and poll arXiv for new papers on saved topics
+- **CSL Styles**: Format citations in thousands of archived CSL styles via hayagriva
 - **License Filter**: `--license open` keeps only works with a recognized open reuse license
 - **Export and Citation Formatting**: BibTeX, CSV, JSON, RIS export; APA, MLA, Chicago, BibTeX cite styles
 - **Local History Panel**: Browse recent searches and downloads in a local web UI (`research-master panel`)
