@@ -1,6 +1,6 @@
 # Available MCP Tools
 
-Once connected via MCP, the following **unified tools** are available. These tools automatically select the best source based on your input, or you can specify a source explicitly.
+Once connected via MCP, the following **18 unified tools** are available. These tools automatically select the best source based on your input, or you can specify a source explicitly.
 
 ## Core Research Tools
 
@@ -36,7 +36,15 @@ Search for papers by a specific author across sources that support author search
 - `source` (optional): Specific source to search
 - `max_results` (optional): Maximum results per source (default: 10)
 
-**Supported sources:** arxiv, semantic, openalex, pubmed, biorxiv, pmc, hal, iacr, ssrn
+**Supported sources:** semantic, openalex, orcid (sources with author-search capability)
+
+### author_profile
+
+Get an author's publication profile: paper counts, most cited works, and publication history, aggregated across sources.
+
+**Parameters:**
+- `author` (required): Author name
+- `max_results` (optional): Maximum papers to analyze per source (default: 20)
 
 ### get_paper
 
@@ -96,6 +104,15 @@ Get papers referenced by a specific paper. Prefers Semantic Scholar.
 - `source` (optional): Specific source (default: "semantic")
 - `max_results` (optional): Maximum results (default: 20)
 
+### get_related_papers
+
+Get papers related or similar to a specific paper. The source is auto-detected from the paper ID format.
+
+**Parameters:**
+- `paper_id` (required): Paper identifier
+- `source` (optional): Override auto-detection and use specific source
+- `max_results` (optional): Maximum results (default: 20)
+
 ## Lookup Tools
 
 ### lookup_by_doi
@@ -106,7 +123,7 @@ Look up a paper by its DOI across all sources that support DOI lookup.
 - `doi` (required): Digital Object Identifier (e.g., "10.48550/arXiv.2301.12345")
 - `source` (optional): Specific source to query (default: all)
 
-**Supported sources:** semantic, openalex, crossref, hal, doaj, osf, springer, mdpi, acm, base, unpaywall
+**Supported sources:** all enabled sources with DOI lookup capability. In the default build: semantic, openalex, crossref, datacite, inspire, ads, citeseerx, dimensions, ieee_xplore, core, zenodo, openaire, jstor, doaj, osf, springer, mdpi, acm, base, unpaywall
 
 ## Utility Tools
 
@@ -122,9 +139,6 @@ Remove duplicate papers from a list using DOI matching and title similarity.
 - Exact DOI match
 - Title similarity > 0.95 (Jaro-Winkler algorithm)
 - Author verification
-
-- `search_by_author` (optional): Author name
-- `max_results` (optional): Maximum papers to analyze per source (default: 20)
 
 ### list_sources
 
@@ -164,6 +178,22 @@ Get AI-powered paper recommendations similar to a given paper. Tries Semantic Sc
 **Parameters:**
 - `paper_id` (required): Paper identifier to find similar papers for
 - `max_results` (optional): Maximum recommendations (default: 20)
+
+### write_paper
+
+Save paper metadata to a local JSON library file for later reference, with optional notes. Papers are appended to `library.json` in the platform data directory (for example `~/Library/Application Support/research-master/library.json` on macOS).
+
+**Parameters:**
+- `papers` (required): Array of paper objects to save
+- `notes` (optional): Notes to attach to the saved papers
+
+### web_search
+
+Search the general web for information, as a fallback when paper sources don't have enough results. Requires the `EXA_API_KEY` environment variable.
+
+**Parameters:**
+- `query` (required): Search query
+- `max_results` (optional): Maximum results (default: 5)
 
 The unified tools use intelligent source auto-detection:
 

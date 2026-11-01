@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Research Master MCP is a Model Context Protocol (MCP) server that provides unified access to 28+ academic research sources (arXiv, Semantic Scholar, PubMed, OpenAlex, Europe PMC, etc.) for searching, downloading, and analyzing academic papers.
+Research Master MCP is a Model Context Protocol (MCP) server that provides unified access to 35 academic research sources (31 enabled by default; arXiv, Semantic Scholar, PubMed, OpenAlex, Europe PMC, DataCite, INSPIRE-HEP, NASA ADS, etc.) for searching, downloading, and analyzing academic papers.
 
 ## Build & Test Commands
 
@@ -46,9 +46,11 @@ cargo fmt
 
 - **`src/lib.rs`** - Library root, exports public API
 - **`src/main.rs`** - CLI entry point using clap for argument parsing
-- **`src/sources/`** - Plugin-based architecture with 28 research sources
-- **`src/mcp/`** - MCP protocol server implementation
+- **`src/sources/`** - Plugin-based architecture with 35 research sources
+- **`src/mcp/`** - MCP protocol server implementation (18 unified tools)
 - **`src/models/`** - Core data structures (Paper, SearchQuery, etc.)
+- **`src/panel.rs`** - Local web panel for browsing search and download history
+- **`src/config/`** - Environment and file-based configuration
 - **`src/utils/`** - HTTP client, deduplication, PDF extraction
 
 ### Source Plugin System
@@ -104,7 +106,8 @@ Sources use `SourceError` enum with conversion implementations from `reqwest::Er
 ## Important Configuration
 
 - **Google Scholar**: Disabled by default, requires both `--features google_scholar` at compile time AND `GOOGLE_SCHOLAR_ENABLED=true` at runtime
-- **API Keys**: Optional for most sources (rate limits apply). Keys via environment variables (e.g., `SEMANTIC_SCHOLAR_API_KEY`)
+- **Opt-in sources**: SciSpace, Connected Papers, and WorldWideScience are excluded from the default build (their public endpoints no longer resolve); build with `--features scispace,connected_papers,worldwidescience` to include them
+- **API Keys**: Optional for most sources (rate limits apply). Keys via environment variables (e.g., `SEMANTIC_SCHOLAR_API_KEY`). IEEE Xplore, ACM, Springer, and NASA ADS require keys and fail with an error naming the key and signup URL when missing
 - **Poppler**: Required for PDF text extraction (`brew install poppler` on macOS, `apt-get install libpoppler-cpp-dev` on Ubuntu)
 
 ### Environment Variables
@@ -116,6 +119,13 @@ Sources use `SourceError` enum with conversion implementations from `reqwest::Er
 | `SEMANTIC_SCHOLAR_RATE_LIMIT` | Rate limit (requests/second) | 1 |
 | `SEMANTIC_SCHOLAR_CIRCUIT_BREAKER_THRESHOLD` | Failures before opening circuit | 10 |
 | `DIMENSIONS_API_KEY` | API key for Dimensions API | None |
+| `OPENALEX_API_KEY` | API key for OpenAlex (meters search endpoints) | None |
+| `ADS_API_KEY` | Required for NASA ADS search and DOI lookup | None |
+| `IEEE_XPLORE_API_KEY` | Required for IEEE Xplore | None |
+| `ACM_API_KEY` | Required for ACM | None |
+| `SPRINGER_API_KEY` | Required for Springer | None |
+| `CORE_API_KEY` | API key for CORE | None |
+| `EXA_API_KEY` | Enables the MCP `web_search` tool | None |
 | `GOOGLE_SCHOLAR_ENABLED` | Enable Google Scholar feature | false |
 | `RESEARCH_MASTER_RATE_LIMITS_DEFAULT_REQUESTS_PER_SECOND` | Global rate limit | 5 |
 
@@ -128,15 +138,17 @@ Paper ID formats are auto-detected in `unified_tools.rs`:
 - `xxxx/xxxx` (single slash) → IACR
 - `10.xxxx/xxxxxx` → DOI lookup (Semantic Scholar preferred)
 
-## Research Sources (28 total)
+## Research Sources (35 total; 31 in the default build)
 
 | Source | Capabilities | Description |
 |--------|-------------|-------------|
 | arXiv | Search, Download | Preprint papers in physics, math, CS, and more |
 | PubMed | Search, Citations | Biomedical literature from NIH/NLM |
 | bioRxiv | Search, Download | Biology preprints |
+| medRxiv | Search, Download | Health sciences preprints |
 | Semantic Scholar | Search, Citations, Download | AI-powered academic search |
 | OpenAlex | Search, Citations | Open scholarly knowledge graph |
+| ORCID | Search, Author Search | ORCID researcher profiles and works |
 | CrossRef | Search, DOI Lookup | DOI registration metadata |
 | IACR | Search, Download | Cryptology research papers |
 | PMC | Search, Download | PubMed Central open access papers |
@@ -145,24 +157,30 @@ Paper ID formats are auto-detected in `unified_tools.rs`:
 | SSRN | Search, Download | Social science research network |
 | Dimensions | Search | Research discovery platform |
 | IEEE Xplore | Search, Download | Engineering and technology papers |
-| Europe PMC | Search, Citations | European PMC mirror |
+| Europe PMC | Search, Read | European PMC mirror |
 | CORE | Search | Open access research papers |
+| CiteSeerX | Search, DOI Lookup | Computer science paper search |
 | Zenodo | Search, Download | CERN-backed research repository |
+| OpenAIRE | Search, Download, DOI Lookup | EU open access research aggregator |
+| DataCite | Search, DOI Lookup | DOI metadata for datasets and research outputs |
+| INSPIRE-HEP | Search, DOI Lookup | High-energy physics literature |
+| NASA ADS | Search, DOI Lookup | Astronomy and astrophysics literature |
 | Unpaywall | DOI Lookup | Find open access versions of papers |
 | MDPI | Search, Download | Open access publisher |
 | JSTOR | Search | Humanities and social sciences |
-| SciSpace | Search, Citations | Scientific research platform |
+| SciSpace | Search, DOI Lookup | Scientific research platform (opt-in via `--features`; public endpoint retired) |
 | ACM | Search, Download | Computing literature |
-| Connected Papers | Citations | Find related papers |
+| Connected Papers | Citations, DOI Lookup | Find related papers (opt-in via `--features`; no public REST API) |
 | DOAJ | Search | Directory of open access journals |
-| WorldWideScience | Search | Global science portal |
+| WorldWideScience | Search, DOI Lookup | Global science portal (opt-in via `--features`; public endpoint retired) |
 | OSF | Search, Download | Open Science Framework preprints |
 | BASE | Search | Bielefeld Academic Search Engine |
 | Springer | Search, Download | Springer/Nature publications |
-| Google Scholar | Search | Web search for scholarly literature |
+| Google Scholar | Search | Web search for scholarly literature (opt-in; also needs `GOOGLE_SCHOLAR_ENABLED=true`) |
 
 ### Convenience Feature Groups
 
 - `core` - arxiv, pubmed, semantic
-- `preprints` - arxiv, biorxiv
-- `full` - All sources (default, excludes google_scholar)
+- `preprints` - arxiv, biorxiv, medrxiv
+- `full` - All sources except google_scholar (includes scispace, connected_papers, worldwidescience)
+- default build - 31 sources: everything except google_scholar, scispace, connected_papers, worldwidescience
