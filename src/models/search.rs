@@ -22,6 +22,101 @@ pub enum SortBy {
     Author,
 }
 
+/// How search results are filtered by the work's reported license.
+/// Unknown licenses never qualify as open. This does not waive API terms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LicensePolicy {
+    /// Keep every result.
+    #[default]
+    Any,
+    /// Keep works with a recognized open license; exclude unknowns.
+    Open,
+    /// Skip filtering by work-license metadata, without waiving API terms.
+    Ignore,
+}
+
+impl LicensePolicy {
+    /// Parse a policy name. Accepts `any`, `open`, and `ignore`.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "any" => Some(Self::Any),
+            "open" => Some(Self::Open),
+            "ignore" => Some(Self::Ignore),
+            _ => None,
+        }
+    }
+
+    /// Whether the reported license passes the policy.
+    pub fn allows(self, license: Option<&str>) -> bool {
+        match self {
+            Self::Any | Self::Ignore => true,
+            Self::Open => license
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_some_and(is_open_license),
+        }
+    }
+}
+
+/// Parse the shared year filter into inclusive bounds.
+///
+/// Accepts `"2020"`, `"2018-2022"`, `"2010-"` (from onward), and `"-2015"`
+/// (until). Open ranges get practical extremes rather than being silently
+/// narrowed to a single year.
+pub fn year_bounds(year: &str) -> Option<(u32, u32)> {
+    const MIN_YEAR: u32 = 1000;
+    const MAX_YEAR: u32 = 9999;
+
+    let year = year.trim();
+    let (from, to) = if let Some(until) = year.strip_prefix('-') {
+        (MIN_YEAR, until.trim().parse().ok()?)
+    } else if let Some(since) = year.strip_suffix('-') {
+        (since.trim().parse().ok()?, MAX_YEAR)
+    } else if let Some((a, b)) = year.split_once('-') {
+        (a.trim().parse().ok()?, b.trim().parse().ok()?)
+    } else {
+        let y = year.parse().ok()?;
+        (y, y)
+    };
+    (from <= to).then_some((from, to))
+}
+
+/// Whether a license string describes an open license.
+///
+/// Matched case-insensitively against the license names and SPDX identifiers
+/// sources actually return. Unknown strings are not treated as open.
+pub fn is_open_license(license: &str) -> bool {
+    let normalized = license.to_ascii_lowercase();
+    let name = normalized.trim().trim_end_matches('/');
+    let name = name.split('?').next().unwrap_or(name);
+    let name = name.split('#').next().unwrap_or(name);
+    name == "cc0"
+        || name
+            .strip_prefix("cc0-")
+            .is_some_and(|version| version.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        || (name.starts_with("cc-by-")
+            && name[6..].chars().next().is_some_and(|c| c.is_ascii_digit()))
+        || (name.starts_with("cc-by-sa-")
+            && name[9..].chars().next().is_some_and(|c| c.is_ascii_digit()))
+        || name == "public domain"
+        || name == "creative commons attribution 4.0 international"
+        || name == "creative commons zero 1.0 universal"
+        || name
+            .strip_prefix("https://creativecommons.org/licenses/by/")
+            .is_some_and(|version| version.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        || name
+            .strip_prefix("https://creativecommons.org/licenses/by-sa/")
+            .is_some_and(|version| version.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        || name
+            .strip_prefix("https://creativecommons.org/publicdomain/zero/")
+            .is_some_and(|version| version.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        || matches!(
+            name,
+            "mit" | "apache-2.0" | "bsd-2-clause" | "bsd-3-clause" | "gpl-3.0" | "unlicense"
+        )
+}
+
 /// Search query parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchQuery {
@@ -51,6 +146,10 @@ pub struct SearchQuery {
 
     /// Whether to fetch detailed information (slower but more complete)
     pub fetch_details: bool,
+
+    /// Which results to keep based on the license a source reports
+    #[serde(default)]
+    pub license_policy: LicensePolicy,
 }
 
 impl Default for SearchQuery {
@@ -65,6 +164,7 @@ impl Default for SearchQuery {
             author: None,
             category: None,
             fetch_details: true,
+            license_policy: LicensePolicy::Any,
         }
     }
 }
@@ -123,6 +223,12 @@ impl SearchQuery {
     /// Enable/disable detailed fetching
     pub fn fetch_details(mut self, fetch: bool) -> Self {
         self.fetch_details = fetch;
+        self
+    }
+
+    /// Set the license policy applied to results
+    pub fn license_policy(mut self, policy: LicensePolicy) -> Self {
+        self.license_policy = policy;
         self
     }
 }
@@ -487,6 +593,22 @@ mod tests {
     }
 
     #[test]
+    fn license_policy_excludes_unknown_and_restricted_licenses() {
+        assert!(LicensePolicy::Open.allows(Some("cc-by-4.0")));
+        assert!(LicensePolicy::Open.allows(Some("https://creativecommons.org/licenses/by/4.0/")));
+        for value in [
+            None,
+            Some("all rights reserved"),
+            Some("cc-by-nc-4.0"),
+            Some("arXiv nonexclusive-distrib 1.0"),
+            Some("open access"),
+        ] {
+            assert!(!LicensePolicy::Open.allows(value));
+            assert!(LicensePolicy::Ignore.allows(value));
+        }
+    }
+
+    #[test]
     fn test_search_query_new() {
         let query = SearchQuery::new("machine learning");
         assert_eq!(query.query, "machine learning");
@@ -536,6 +658,18 @@ mod tests {
 
         let from_year = SearchQuery::new("test").year("2020-");
         assert_eq!(from_year.year, Some("2020-".to_string()));
+    }
+
+    #[test]
+    fn test_year_bounds_parses_all_documented_forms() {
+        assert_eq!(year_bounds("2020"), Some((2020, 2020)));
+        assert_eq!(year_bounds("2018-2022"), Some((2018, 2022)));
+        assert_eq!(year_bounds("2010-"), Some((2010, 9999)));
+        assert_eq!(year_bounds("-2015"), Some((1000, 2015)));
+        assert_eq!(year_bounds("2023 "), Some((2023, 2023)));
+        assert_eq!(year_bounds("2024-2022"), None);
+        assert_eq!(year_bounds("abc"), None);
+        assert_eq!(year_bounds(""), None);
     }
 
     #[test]

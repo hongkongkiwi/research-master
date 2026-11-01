@@ -31,10 +31,26 @@ pub struct CacheConfig {
     pub max_size_mb: usize,
 }
 
+/// Parse a boolean environment value.
+///
+/// Accepts `1`, `true`, `yes`, and `on` (any case). Everything else, including
+/// `false` and an empty string, is false. A variable that is merely set is not
+/// enough: `RESEARCH_MASTER_CACHE_ENABLED=false` must disable the cache.
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 impl Default for CacheConfig {
     fn default() -> Self {
         Self {
-            enabled: std::env::var("RESEARCH_MASTER_CACHE_ENABLED").is_ok(),
+            enabled: env_flag("RESEARCH_MASTER_CACHE_ENABLED"),
             directory: None,
             search_ttl_seconds: default_search_ttl(),
             citation_ttl_seconds: default_citation_ttl(),
@@ -345,6 +361,35 @@ pub fn load_config(path: &Path) -> Result<Config, config::ConfigError> {
     settings.try_deserialize()
 }
 
+/// Install file configuration before creating the source registry.
+pub fn set_config(config: Config) -> Result<(), Box<Config>> {
+    CONFIG_OVERRIDE
+        .set(apply_env_overrides(config))
+        .map_err(Box::new)
+}
+
+/// Layer environment variables over a file-loaded config.
+///
+/// Only variables that are actually set take effect, so an unset variable does
+/// not wipe a value the file provided.
+fn apply_env_overrides(mut config: Config) -> Config {
+    if let Ok(value) = std::env::var("RESEARCH_MASTER_ENABLED_SOURCES") {
+        config.sources.enabled_sources = Some(value);
+    }
+    if let Ok(value) = std::env::var("RESEARCH_MASTER_DISABLED_SOURCES") {
+        config.sources.disabled_sources = Some(value);
+    }
+    if let Ok(value) = std::env::var("RESEARCH_MASTER_DEFAULT_DISABLED_SOURCES") {
+        config.sources.default_disabled_sources = Some(value);
+    }
+    if std::env::var("RESEARCH_MASTER_CACHE_ENABLED").is_ok() {
+        config.cache.enabled = env_flag("RESEARCH_MASTER_CACHE_ENABLED");
+    }
+    config
+}
+
+static CONFIG_OVERRIDE: std::sync::OnceLock<Config> = std::sync::OnceLock::new();
+
 /// Get the configuration (from env vars or defaults)
 pub fn get_config() -> Config {
     let test_mode = std::env::var(TEST_MODE_ENV_VAR)
@@ -353,6 +398,8 @@ pub fn get_config() -> Config {
 
     if test_mode {
         Config::without_env()
+    } else if let Some(config) = CONFIG_OVERRIDE.get() {
+        config.clone()
     } else {
         Config::from_env()
     }

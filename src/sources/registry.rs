@@ -9,6 +9,8 @@ use crate::config::SourceConfig;
 // Conditionally import source types based on feature flags
 #[cfg(feature = "source-acm")]
 use super::acm::AcmSource;
+#[cfg(feature = "source-ads")]
+use super::ads::AdsSource;
 #[cfg(feature = "source-arxiv")]
 use super::arxiv::ArxivSource;
 #[cfg(feature = "source-base")]
@@ -23,6 +25,8 @@ use super::connected_papers::ConnectedPapersSource;
 use super::core::CoreSource;
 #[cfg(feature = "source-crossref")]
 use super::crossref::CrossRefSource;
+#[cfg(feature = "source-datacite")]
+use super::datacite::DataCiteSource;
 #[cfg(feature = "source-dblp")]
 use super::dblp::DblpSource;
 #[cfg(feature = "source-dimensions")]
@@ -39,6 +43,8 @@ use super::hal::HalSource;
 use super::iacr::IacrSource;
 #[cfg(feature = "source-ieee_xplore")]
 use super::ieee_xplore::IeeeXploreSource;
+#[cfg(feature = "source-inspire")]
+use super::inspire::InspireSource;
 #[cfg(feature = "source-jstor")]
 use super::jstor::JstorSource;
 #[cfg(feature = "source-mdpi")]
@@ -205,19 +211,24 @@ impl SourceRegistry {
             sources: HashMap::new(),
         };
 
-        // Helper macro to register a source with error handling
+        // Helper macro to register a source with error handling.
+        // The label is the source id, so a failed init says which source and why
+        // instead of a warning with neither.
         macro_rules! try_register {
-            ($source:expr) => {
-                if let Ok(source) = $source {
-                    let source_id = source.id().to_string();
-                    if filter.is_enabled(&source_id) {
-                        registry.register(Arc::new(source));
-                        tracing::info!("Registered source: {}", source_id);
-                    } else {
-                        tracing::debug!("Source '{}' filtered out by source filter", source_id);
+            ($label:literal, $source:expr) => {
+                match $source {
+                    Ok(source) => {
+                        let source_id = source.id().to_string();
+                        if filter.is_enabled(&source_id) {
+                            registry.register(Arc::new(source));
+                            tracing::info!("Registered source: {}", source_id);
+                        } else {
+                            tracing::debug!("Source '{}' filtered out by source filter", source_id);
+                        }
                     }
-                } else {
-                    tracing::warn!("Skipping source: initialization failed");
+                    Err(error) => {
+                        tracing::warn!("Skipping source '{}': {}", $label, error);
+                    }
                 }
             };
         }
@@ -225,100 +236,109 @@ impl SourceRegistry {
         // Register all available sources (will skip any that fail to initialize)
         // Each source is conditionally compiled based on feature flags
         #[cfg(feature = "source-arxiv")]
-        try_register!(ArxivSource::new());
+        try_register!("arxiv", ArxivSource::new());
 
         #[cfg(feature = "source-pubmed")]
-        try_register!(PubMedSource::new());
+        try_register!("pubmed", PubMedSource::new());
 
         #[cfg(feature = "source-biorxiv")]
-        try_register!(BiorxivSource::new());
+        try_register!("biorxiv", BiorxivSource::new());
 
         #[cfg(feature = "source-medrxiv")]
-        try_register!(MedrxivSource::new());
+        try_register!("medrxiv", MedrxivSource::new());
 
         #[cfg(feature = "source-semantic")]
-        try_register!(SemanticScholarSource::new());
+        try_register!("semantic", SemanticScholarSource::new());
 
         #[cfg(feature = "source-openalex")]
-        try_register!(OpenAlexSource::new());
+        try_register!("openalex", OpenAlexSource::new());
 
         #[cfg(feature = "source-openaire")]
-        try_register!(OpenaireSource::new());
+        try_register!("openaire", OpenaireSource::new());
 
         #[cfg(feature = "source-orcid")]
-        try_register!(OrcidSource::new());
+        try_register!("orcid", OrcidSource::new());
 
         #[cfg(feature = "source-crossref")]
-        try_register!(CrossRefSource::new());
+        try_register!("crossref", CrossRefSource::new());
 
         #[cfg(feature = "source-iacr")]
-        try_register!(IacrSource::new());
+        try_register!("iacr", IacrSource::new());
 
         #[cfg(feature = "source-pmc")]
-        try_register!(PmcSource::new());
+        try_register!("pmc", PmcSource::new());
 
         #[cfg(feature = "source-hal")]
-        try_register!(HalSource::new());
+        try_register!("hal", HalSource::new());
 
         #[cfg(feature = "source-dblp")]
-        try_register!(DblpSource::new());
+        try_register!("dblp", DblpSource::new());
 
         #[cfg(feature = "source-dimensions")]
-        try_register!(DimensionsSource::new());
+        try_register!("dimensions", DimensionsSource::new());
 
         #[cfg(feature = "source-ieee_xplore")]
-        try_register!(IeeeXploreSource::new());
+        try_register!("ieee_xplore", IeeeXploreSource::new());
 
         #[cfg(feature = "source-core-repo")]
-        try_register!(CoreSource::new());
+        try_register!("core", CoreSource::new());
 
         #[cfg(feature = "source-zenodo")]
-        try_register!(ZenodoSource::new());
+        try_register!("zenodo", ZenodoSource::new());
+
+        #[cfg(feature = "source-datacite")]
+        try_register!("datacite", DataCiteSource::new());
+
+        #[cfg(feature = "source-inspire")]
+        try_register!("inspire", InspireSource::new());
+
+        #[cfg(feature = "source-ads")]
+        try_register!("ads", AdsSource::new());
 
         #[cfg(feature = "source-unpaywall")]
-        try_register!(UnpaywallSource::new());
+        try_register!("unpaywall", UnpaywallSource::new());
 
         #[cfg(feature = "source-mdpi")]
-        try_register!(MdpiSource::new());
+        try_register!("mdpi", MdpiSource::new());
 
         #[cfg(feature = "source-ssrn")]
-        try_register!(SsrnSource::new());
+        try_register!("ssrn", SsrnSource::new());
 
         #[cfg(feature = "source-jstor")]
-        try_register!(JstorSource::new());
+        try_register!("jstor", JstorSource::new());
 
         #[cfg(feature = "source-scispace")]
-        try_register!(ScispaceSource::new());
+        try_register!("scispace", ScispaceSource::new());
 
         #[cfg(feature = "source-acm")]
-        try_register!(AcmSource::new());
+        try_register!("acm", AcmSource::new());
 
         #[cfg(feature = "source-citeseerx")]
-        try_register!(CiteseerxSource::new());
+        try_register!("citeseerx", CiteseerxSource::new());
 
         #[cfg(feature = "source-connected_papers")]
-        try_register!(ConnectedPapersSource::new());
+        try_register!("connected_papers", ConnectedPapersSource::new());
 
         #[cfg(feature = "source-doaj")]
-        try_register!(DoajSource::new());
+        try_register!("doaj", DoajSource::new());
 
         #[cfg(feature = "source-europe_pmc")]
-        try_register!(EuropePmcSource::new());
+        try_register!("europe_pmc", EuropePmcSource::new());
 
         #[cfg(feature = "source-worldwidescience")]
-        try_register!(WorldWideScienceSource::new());
+        try_register!("worldwidescience", WorldWideScienceSource::new());
 
         #[cfg(feature = "source-osf")]
-        try_register!(OsfSource::new());
+        try_register!("osf", OsfSource::new());
 
         #[cfg(feature = "source-base")]
-        try_register!(BaseSource::new());
+        try_register!("base", BaseSource::new());
 
         #[cfg(feature = "source-springer")]
-        try_register!(SpringerSource::new());
+        try_register!("springer", SpringerSource::new());
 
         #[cfg(feature = "source-google_scholar")]
-        try_register!(GoogleScholarSource::new());
+        try_register!("google_scholar", GoogleScholarSource::new());
 
         if registry.is_empty() {
             return Err(SourceError::Other(
@@ -365,11 +385,18 @@ impl SourceRegistry {
         self.sources.keys().map(|s| s.as_str())
     }
 
-    /// Get sources that support a specific capability
+    /// Get sources that support a specific capability.
+    ///
+    /// Sorted by source id: the backing store is a HashMap whose iteration
+    /// order changes per process, and callers that try sources in turn (DOI
+    /// lookup fan-out) would otherwise pick a different order on every run.
     pub fn with_capability(&self, capability: SourceCapabilities) -> Vec<&Arc<dyn Source>> {
-        self.all()
+        let mut sources: Vec<&Arc<dyn Source>> = self
+            .all()
             .filter(|s| s.capabilities().contains(capability))
-            .collect()
+            .collect();
+        sources.sort_by(|a, b| a.id().cmp(b.id()));
+        sources
     }
 
     /// Get sources that support search

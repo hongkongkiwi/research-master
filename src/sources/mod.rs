@@ -102,6 +102,8 @@
 
 #[cfg(feature = "source-acm")]
 mod acm;
+#[cfg(feature = "source-ads")]
+mod ads;
 #[cfg(feature = "source-arxiv")]
 mod arxiv;
 #[cfg(feature = "source-base")]
@@ -116,6 +118,8 @@ mod connected_papers;
 mod core;
 #[cfg(feature = "source-crossref")]
 mod crossref;
+#[cfg(feature = "source-datacite")]
+mod datacite;
 #[cfg(feature = "source-dblp")]
 mod dblp;
 #[cfg(feature = "source-dimensions")]
@@ -132,6 +136,8 @@ mod hal;
 mod iacr;
 #[cfg(feature = "source-ieee_xplore")]
 mod ieee_xplore;
+#[cfg(feature = "source-inspire")]
+mod inspire;
 #[cfg(feature = "source-jstor")]
 mod jstor;
 #[cfg(feature = "source-mdpi")]

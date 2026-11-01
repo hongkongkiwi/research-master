@@ -164,6 +164,15 @@ fn expected_source_count() -> usize {
     if cfg!(feature = "source-google_scholar") {
         count += 1;
     }
+    if cfg!(feature = "source-datacite") {
+        count += 1;
+    }
+    if cfg!(feature = "source-inspire") {
+        count += 1;
+    }
+    if cfg!(feature = "source-ads") {
+        count += 1;
+    }
 
     count
 }

@@ -1,0 +1,16 @@
+# Free scholarly APIs and work licenses
+
+The sources below use documented APIs. Registration and work licensing are separate: a free search API does not grant permission to reuse a paper's full text. Research Master returns metadata and links; download only material you are authorized to access. The `--license open` CLI option and the MCP `search_papers` `license: "open"` option require a recognized open work-license string. Missing license metadata is excluded. `any` (default) and `ignore` do not filter work licenses. Neither option bypasses provider rate limits, authentication, or API terms. Set `RESEARCH_MASTER_DISABLED_SOURCES` to remove a provider, or set `source` per MCP request.
+
+| Source | Access | Search / lookup | Notes |
+| --- | --- | --- | --- |
+| [DataCite public REST API](https://support.datacite.org/docs/api) | No key to retrieve metadata | DOI metadata search and direct DOI lookup | `rightsList.rightsIdentifier` is copied to the work-license field when provided. DataCite asks integrations making frequent requests to set a User-Agent identifying the integration and a contact address (`mailto:`); configure `RESEARCH_MASTER_USER_AGENT` accordingly. Creation and updates require a member account. |
+| [INSPIRE-HEP literature API](https://github.com/inspirehep/rest-api-doc) | No key | High-energy physics literature search and DOI lookup | Returned `license[].license` describes the material, which may be a distribution license rather than an open reuse license. |
+| [NASA ADS API](https://ui.adsabs.harvard.edu/help/api/) | Free account and token (`ADS_API_KEY`) | Astronomy and physics literature search and DOI lookup | Sign up through [ADS](https://ui.adsabs.harvard.edu/user/settings/token). Without a token the source returns no search results. ADS `property` open-access flags are not work licenses. |
+| [Europe PMC REST API](https://europepmc.org/RestfulWebService) | No key | Biomedical search | Included in default builds. |
+
+DataCite overlaps Zenodo, Crossref and OpenAlex. Search across all sources can contain duplicate works. The CLI has `--dedup`, while MCP results currently retain duplicates. When choosing a provider, prefer the specialized source for field-specific coverage.
+
+Not added: [OpenCitations](https://opencitations.net/index/api/v2) serves citation edges, not general paper search, so it is better suited to a future citations tool. [Internet Archive Scholar](https://scholar.archive.org/) did not expose a working public search endpoint during this review; no undocumented scraper was added. Any service that requires scraping, offers paid-only access or has unclear automated-access terms is excluded until its official API and permitted use can be verified.
+
+The local history page is started with `research-master panel --host 127.0.0.1 --port 3001`. It reads the most recent 100 entries from local history and never serves outside loopback. CLI and MCP `search_papers` requests append history entries; searches may contain sensitive query text, so do not expose the page through a reverse proxy. Search caching is opt-in with `RESEARCH_MASTER_CACHE_ENABLED=true`, uses the configured per-source TTL, and includes query options in the cache key. The panel shows cache status; it does not manage cache entries.

@@ -23,6 +23,9 @@ Research Master MCP supports **28 academic research sources** with different pri
 | [Dimensions](https://app.dimensions.ai) | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ |
 | [IEEE Xplore](https://ieeexplore.ieee.org) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | [Zenodo](https://zenodo.org) | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
+| [DataCite](https://datacite.org) | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| [INSPIRE-HEP](https://inspirehep.net) | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| [NASA ADS](https://ui.adsabs.harvard.edu) | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | [Unpaywall](https://unpaywall.org) | ❌ | ✅ | ❌ | ❌ | ✅ | ❌ |
 | [MDPI](https://mdpi.com) | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
 | [JSTOR](https://www.jstor.org) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -60,6 +63,9 @@ Research Master MCP supports **28 academic research sources** with different pri
 | [Dimensions](https://app.dimensions.ai) | Free | No | Unlimited | 1 request/sec | Research metrics and discovery |
 | [IEEE Xplore](https://ieeexplore.ieee.org) | Paid | Required* | Yes | 3 requests/sec | Free API key from developer.ieee.org |
 | [Zenodo](https://zenodo.org) | Free | No | Unlimited | 1 request/sec | CERN-hosted open science repository |
+| [DataCite](https://datacite.org) | Free | No | Unlimited | 1 request/sec | DOI metadata registry; set `RESEARCH_MASTER_USER_AGENT` with contact address |
+| [INSPIRE-HEP](https://inspirehep.net) | Free | No | Unlimited | 1 request/sec | High-energy physics literature database |
+| [NASA ADS](https://ui.adsabs.harvard.edu) | Free | Required* | Yes | ~5 requests/sec | Astronomy and physics; token from ui.adsabs.harvard.edu (`ADS_API_KEY`) |
 | [Unpaywall](https://unpaywall.org) | Free | No | Unlimited | 1 request/sec | Find open access versions of papers |
 | [MDPI](https://mdpi.com) | Free | No | Unlimited | 1 request/sec | Open access publisher |
 | [JSTOR](https://www.jstor.org) | Paid | Required* | Limited | 1 request/sec | Historical journals, requires institutional access |

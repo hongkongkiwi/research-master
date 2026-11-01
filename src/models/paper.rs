@@ -40,6 +40,12 @@ pub enum SourceType {
     Osf,
     Base,
     Springer,
+    /// DataCite DOI registry
+    DataCite,
+    /// INSPIRE-HEP high-energy physics literature
+    Inspire,
+    /// NASA Astrophysics Data System
+    Ads,
     #[serde(untagged)]
     Other(String),
 }
@@ -81,6 +87,9 @@ impl SourceType {
             SourceType::Osf => "OSF Preprints",
             SourceType::Base => "BASE",
             SourceType::Springer => "Springer",
+            SourceType::DataCite => "DataCite",
+            SourceType::Inspire => "INSPIRE-HEP",
+            SourceType::Ads => "NASA ADS",
             SourceType::Other(s) => s,
         }
     }
@@ -121,6 +130,9 @@ impl SourceType {
             SourceType::Osf => "osf",
             SourceType::Base => "base",
             SourceType::Springer => "springer",
+            SourceType::DataCite => "datacite",
+            SourceType::Inspire => "inspire",
+            SourceType::Ads => "ads",
             SourceType::Other(s) => s,
         }
     }
@@ -182,6 +194,13 @@ pub struct Paper {
 
     /// Source-specific metadata (flexible JSON)
     pub extra: Option<HashMap<String, serde_json::Value>>,
+
+    /// License the source reported for this work (SPDX id or license name).
+    ///
+    /// `None` means the source did not say, which is not the same as "all
+    /// rights reserved". License filtering treats the two differently.
+    #[serde(default)]
+    pub license: Option<String>,
 }
 
 impl Paper {
@@ -203,6 +222,7 @@ impl Paper {
             citations: None,
             references: None,
             extra: None,
+            license: None,
         }
     }
 
@@ -328,6 +348,15 @@ impl PaperBuilder {
     /// Set references
     pub fn references(mut self, references: impl Into<String>) -> Self {
         self.paper.references = Some(references.into());
+        self
+    }
+
+    /// Set the license the source reported
+    pub fn license(mut self, license: impl Into<String>) -> Self {
+        let license = license.into();
+        if !license.trim().is_empty() {
+            self.paper.license = Some(license);
+        }
         self
     }
 

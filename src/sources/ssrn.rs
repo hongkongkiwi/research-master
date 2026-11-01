@@ -95,12 +95,20 @@ impl SsrnSource {
         Some(
             PaperBuilder::new(paper_id.clone(), title, url, SourceType::SSRN)
                 .authors(authors)
-                .abstract_text(abstract_text[..abstract_text.len().min(3000)].to_string())
+                .abstract_text(truncate_chars(&abstract_text, 3000))
                 .categories(categories.join(", "))
                 .pdf_url(pdf_url)
                 .build(),
         )
     }
+}
+
+/// Shorten `text` to at most `max` characters without splitting a character.
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    text.chars().take(max).collect()
 }
 
 impl Default for SsrnSource {
@@ -126,7 +134,7 @@ impl Source for SsrnSource {
     async fn search(&self, query: &SearchQuery) -> Result<SearchResponse, SourceError> {
         let url = format!(
             "{}/search.cfm?query={}&pg=1",
-            SSRN_ABSTRACT_URL,
+            SSRN_BASE_URL,
             urlencoding::encode(&query.query)
         );
 

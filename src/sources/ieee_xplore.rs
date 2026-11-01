@@ -67,10 +67,7 @@ impl Source for IeeeXploreSource {
             self.api_key.as_deref().unwrap_or_default()
         );
 
-        url.push_str(&format!(
-            "&article_number={}",
-            urlencoding::encode(&query.query)
-        ));
+        url.push_str(&format!("&querytext={}", urlencoding::encode(&query.query)));
 
         if let Some(year_filter) = &query.year {
             url.push_str(&format!("&publication_year={}", year_filter));
@@ -128,7 +125,7 @@ impl Source for IeeeXploreSource {
             .to_string();
 
         let url = format!(
-            "{}?article_number={}&apikey={}",
+            "{}?doi={}&apikey={}",
             IEEE_XPLORE_API_BASE,
             urlencoding::encode(&clean_doi),
             self.api_key.as_deref().unwrap_or_default()

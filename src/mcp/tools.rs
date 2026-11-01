@@ -105,6 +105,11 @@ impl ToolRegistry {
                     "category": {
                         "type": "string",
                         "description": "Category/subject filter"
+                    },
+                    "license": {
+                        "type": "string",
+                        "enum": ["any", "open", "ignore"],
+                        "description": "Work-license filter. 'any' (default) and 'ignore' keep all results. 'open' keeps only works with recognized open licenses and excludes unknowns. This does not override any provider API terms."
                     }
                 },
                 "required": ["query"]

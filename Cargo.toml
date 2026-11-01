@@ -148,6 +148,9 @@ osf = ["source-osf"]
 base = ["source-base"]
 springer = ["source-springer"]
 google_scholar = ["source-google_scholar"]
+datacite = ["source-datacite"]
+inspire = ["source-inspire"]
+ads = ["source-ads"]
 
 # Internal feature names (to avoid conflicts with source IDs)
 source-arxiv = []
@@ -182,6 +185,9 @@ source-osf = []
 source-base = []
 source-springer = []
 source-google_scholar = []
+source-datacite = []
+source-inspire = []
+source-ads = []
 
 # Default feature: all sources enabled (except google_scholar which requires env var)
 default = [
@@ -215,6 +221,10 @@ default = [
   "source-osf",
   "source-base",
   "source-springer",
+  "source-europe_pmc",
+  "source-datacite",
+  "source-inspire",
+  "source-ads",
   # google_scholar is NOT included by default - requires GOOGLE_SCHOLAR_ENABLED=true
 ]
 
@@ -229,7 +239,8 @@ full = ["source-arxiv", "source-pubmed", "source-biorxiv", "source-semantic",
   "source-scispace", "source-acm", "source-citeseerx", "source-medrxiv",
   "source-openaire", "source-orcid", "source-connected_papers",
   "source-doaj", "source-worldwidescience", "source-osf",
-  "source-base", "source-springer"]
+  "source-base", "source-springer", "source-datacite",
+  "source-inspire", "source-ads"]
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -122,28 +122,10 @@ impl CacheService {
         &self.base_dir
     }
 
-    /// Generate a cache key for a search query
-    fn search_cache_key(
-        &self,
-        query: &str,
-        source: &str,
-        max_results: usize,
-        year: Option<&str>,
-        author: Option<&str>,
-        category: Option<&str>,
-    ) -> String {
-        let input = format!(
-            "{}|{}|{}|{}|{}|{}",
-            query,
-            source,
-            max_results,
-            year.unwrap_or_default(),
-            author.unwrap_or_default(),
-            category.unwrap_or_default()
-        );
-
-        let digest = md5::compute(input.as_bytes());
-        format!("{:x}", digest)
+    /// Generate a cache key for a search query, including source-specific options.
+    fn search_cache_key(&self, query: &SearchQuery, source: &str) -> String {
+        let input = serde_json::to_vec(&(source, query)).unwrap_or_default();
+        format!("{:x}", md5::compute(input))
     }
 
     /// Generate a cache key for a citation lookup
@@ -168,14 +150,7 @@ impl CacheService {
             return CacheResult::Miss;
         }
 
-        let key = self.search_cache_key(
-            &query.query,
-            source,
-            query.max_results,
-            query.year.as_deref(),
-            query.author.as_deref(),
-            query.category.as_deref(),
-        );
+        let key = self.search_cache_key(query, source);
 
         let cache_path = self.search_dir.join(&key);
 
@@ -202,14 +177,7 @@ impl CacheService {
             return;
         }
 
-        let key = self.search_cache_key(
-            &query.query,
-            source,
-            query.max_results,
-            query.year.as_deref(),
-            query.author.as_deref(),
-            query.category.as_deref(),
-        );
+        let key = self.search_cache_key(query, source);
         let cache_path = self.search_dir.join(&key);
 
         let cached = CachedSearchResponse {
@@ -504,6 +472,26 @@ mod tests {
         }
 
         cache.clear_all().unwrap();
+    }
+
+    #[test]
+    fn search_cache_key_includes_query_options() {
+        let cache = CacheService::from_config(test_cache_config());
+        let base = SearchQuery::new("same search");
+        let first = cache.search_cache_key(&base, "arxiv");
+        assert_ne!(
+            first,
+            cache.search_cache_key(&base.clone().fetch_details(false), "arxiv")
+        );
+        assert_ne!(
+            first,
+            cache.search_cache_key(&base.clone().sort_by(crate::models::SortBy::Date), "arxiv")
+        );
+        assert_ne!(
+            first,
+            cache.search_cache_key(&base.clone().filter("type", "paper"), "arxiv")
+        );
+        assert_ne!(first, cache.search_cache_key(&base, "semantic"));
     }
 
     #[tokio::test]

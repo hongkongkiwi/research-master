@@ -128,18 +128,23 @@ impl HistoryService {
 
         let file = File::open(&self.path)?;
         let reader = BufReader::new(file);
-        let mut entries: Vec<HistoryEntry> = Vec::new();
+        let mut entries: std::collections::VecDeque<HistoryEntry> =
+            std::collections::VecDeque::with_capacity(limit);
 
-        for line in reader.lines().take(limit * 2) {
+        for line in reader.lines() {
             let line = line?;
             if let Ok(entry) = serde_json::from_str(&line) {
-                entries.push(entry);
+                if limit == 0 {
+                    continue;
+                }
+                if entries.len() == limit {
+                    entries.pop_front();
+                }
+                entries.push_back(entry);
             }
         }
 
-        // Reverse to get newest first, then take limit
-        entries.reverse();
-        entries.truncate(limit);
+        let entries = entries.into_iter().rev().collect();
 
         Ok(entries)
     }
@@ -283,6 +288,22 @@ mod tests {
 
         assert_eq!(entries.len(), 2);
         assert_eq!(queries, vec!["fourth", "third"]);
+    }
+
+    #[test]
+    fn test_read_entries_returns_latest_after_many_entries() {
+        let (_temp_dir, service) = test_service();
+        for number in 0..25 {
+            service
+                .add_search(&format!("query-{number}"), None)
+                .unwrap();
+        }
+        let entries = service.read_entries(3).unwrap();
+        assert_eq!(
+            entries.iter().map(|e| e.query.as_str()).collect::<Vec<_>>(),
+            vec!["query-24", "query-23", "query-22"]
+        );
+        assert!(service.read_entries(0).unwrap().is_empty());
     }
 
     #[test]

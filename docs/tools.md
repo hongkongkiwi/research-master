@@ -14,6 +14,9 @@ Search for papers across all available research sources or a specific source.
 - `max_results` (optional): Maximum number of results (default: 10)
 - `year` (optional): Year filter (e.g., "2020", "2018-2022", "2010-", "-2015")
 - `category` (optional): Category/subject filter
+- `license` (optional): `any` (default) returns all results; `open` retains works with a recognized open reuse license and excludes works without license metadata; `ignore` skips the license filter. This controls work metadata, not the API provider's access terms. To exclude providers, set `RESEARCH_MASTER_DISABLED_SOURCES` or specify `source`.
+
+Search results are cached per source when `RESEARCH_MASTER_CACHE_ENABLED=true`. The `max_results` value applies per source, not to the merged response.
 
 **Example:**
 ```json

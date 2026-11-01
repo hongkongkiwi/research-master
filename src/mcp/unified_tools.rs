@@ -40,14 +40,8 @@ fn auto_detect_source(
             .ok_or_else(|| "HAL source not available".to_string());
     }
 
-    if paper_id.chars().filter(|&c| c == '/').count() == 1 {
-        return sources
-            .iter()
-            .find(|s| s.id() == "iacr")
-            .cloned()
-            .ok_or_else(|| "IACR source not available".to_string());
-    }
-
+    // DOIs (`10.1234/rest`) contain exactly one slash, the same shape as an
+    // IACR id (`2023/1234`). Check for a DOI first or every DOI is sent to IACR.
     if paper_id.starts_with("10.") {
         if let Some(source) = sources
             .iter()
@@ -58,6 +52,14 @@ fn auto_detect_source(
         if let Some(source) = sources.iter().find(|s| s.supports_doi_lookup()) {
             return Ok(Arc::clone(source));
         }
+    }
+
+    if paper_id.chars().filter(|&c| c == '/').count() == 1 {
+        return sources
+            .iter()
+            .find(|s| s.id() == "iacr")
+            .cloned()
+            .ok_or_else(|| "IACR source not available".to_string());
     }
 
     if let Some(source) = sources.iter().find(|s| s.id() == "arxiv") {
@@ -103,8 +105,16 @@ impl ToolHandler for SearchPapersHandler {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let source_filter = args.get("source").and_then(|v| v.as_str());
+        let license_policy = match args.get("license").and_then(|v| v.as_str()) {
+            Some(value) => crate::models::LicensePolicy::parse(value).ok_or_else(|| {
+                format!("Unknown license policy '{value}'. Use any, open, or ignore.")
+            })?,
+            None => crate::models::LicensePolicy::Any,
+        };
 
-        let mut search_query = crate::models::SearchQuery::new(query).max_results(max_results);
+        let mut search_query = crate::models::SearchQuery::new(query)
+            .max_results(max_results)
+            .license_policy(license_policy);
         if let Some(ref year) = year {
             search_query = search_query.year(year);
         }
@@ -128,8 +138,18 @@ impl ToolHandler for SearchPapersHandler {
                 let source = Arc::clone(source);
                 let sq = Arc::clone(&search_query);
                 async move {
+                    let cache =
+                        crate::utils::CacheService::from_config(crate::config::get_config().cache);
+                    if let crate::utils::CacheResult::Hit(response) =
+                        cache.get_search(&sq, source.id())
+                    {
+                        return Ok(response.papers);
+                    }
                     match source.search(&sq).await {
-                        Ok(response) => Ok(response.papers),
+                        Ok(response) => {
+                            cache.set_search(source.id(), &sq, &response);
+                            Ok(response.papers)
+                        }
                         Err(e) => {
                             tracing::warn!("Search failed for {}: {}", source.id(), e);
                             Err(e)
@@ -141,9 +161,22 @@ impl ToolHandler for SearchPapersHandler {
 
         let results = future::join_all(futures).await;
         let mut all_results = Vec::new();
-        for papers in results.into_iter().flatten() {
-            all_results.extend(papers);
+        let mut failures = Vec::new();
+        for result in results {
+            match result {
+                Ok(papers) => all_results.extend(papers),
+                Err(e) => failures.push(e.to_string()),
+            }
         }
+        // Empty with failures is not the same as "no results": surface the
+        // distinction or callers cannot tell a silent outage from a miss.
+        if all_results.is_empty() && !failures.is_empty() {
+            return Err(format!("All sources failed: {}", failures.join("; ")));
+        }
+        if let Err(error) = crate::utils::HistoryService::new().add_search(query, source_filter) {
+            tracing::warn!("Could not record search history: {}", error);
+        }
+        all_results.retain(|paper| license_policy.allows(paper.license.as_deref()));
         serde_json::to_value(all_results).map_err(|e| e.to_string())
     }
 }
@@ -1279,6 +1312,15 @@ mod tests {
         let result = auto_detect_source(&Arc::new(sources), "2023/1234");
         assert!(result.is_ok());
         assert_eq!(result.unwrap().id(), "iacr");
+    }
+
+    #[test]
+    fn test_auto_detect_doi_not_iacr() {
+        // A DOI has exactly one slash, which used to route it to IACR.
+        let sources = make_test_sources();
+        let result = auto_detect_source(&Arc::new(sources), "10.1145/3292500.3330701");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().id(), "semantic");
     }
 
     #[test]

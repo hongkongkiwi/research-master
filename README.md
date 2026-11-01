@@ -62,7 +62,7 @@ See [Tools](docs/tools.md) for all available MCP tools.
 - **Deduplication**: Remove duplicate results across sources
 - **Rate Limiting**: Configurable to avoid API throttling
 
-See [Sources](docs/sources.md) for supported databases, API requirements, and rate limits.
+See [Sources](docs/sources.md) for supported databases, API requirements, and rate limits. [Free API and license notes](docs/free-apis.md) cover DataCite, INSPIRE-HEP, NASA ADS, work licenses, and the local history panel.
 
 ## Documentation
 
@@ -93,6 +93,12 @@ research-master lookup 10.48550/arXiv.2301.12345
 
 # Start MCP server
 research-master mcp --stdio
+
+# Browse recent searches and downloads (loopback only)
+research-master panel --host 127.0.0.1 --port 3001
+
+# Restrict results to known open reuse licenses
+research-master search "transformer" --license open
 
 # Show all environment variables
 research-master --env

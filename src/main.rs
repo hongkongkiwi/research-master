@@ -19,6 +19,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod panel;
+
 /// Research Master - Search and download academic papers from multiple research sources
 #[derive(Parser, Debug)]
 #[command(name = "research-master")]
@@ -180,6 +182,12 @@ enum Source {
     Core,
     #[value(name = "zenodo")]
     Zenodo,
+    #[value(name = "datacite")]
+    DataCite,
+    #[value(name = "inspire")]
+    Inspire,
+    #[value(name = "ads")]
+    Ads,
     #[value(name = "unpaywall")]
     Unpaywall,
     #[value(name = "mdpi")]
@@ -341,6 +349,10 @@ enum Commands {
         /// Fetch detailed information (slower but more complete)
         #[arg(long, default_value_t = true)]
         fetch_details: bool,
+
+        /// License filter: any (default), open, or ignore
+        #[arg(long, value_enum, default_value_t = LicenseFilter::Any)]
+        license: LicenseFilter,
     },
 
     /// Search for papers by author
@@ -514,6 +526,17 @@ enum Commands {
         /// Host to bind to for SSE mode
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
+    },
+
+    /// Browse recent searches and downloads on this machine
+    Panel {
+        /// Loopback address to bind
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+
+        /// Local port for the history panel
+        #[arg(long, default_value_t = 3001)]
+        port: u16,
     },
 
     /// Deduplicate a JSON file containing papers
@@ -704,6 +727,27 @@ enum Commands {
     },
 }
 
+/// License filter for search results.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum LicenseFilter {
+    /// Keep every result.
+    Any,
+    /// Keep only works with a recognized open license.
+    Open,
+    /// Skip work-license filtering without waiving provider terms.
+    Ignore,
+}
+
+impl LicenseFilter {
+    fn policy(self) -> research_master::models::LicensePolicy {
+        match self {
+            LicenseFilter::Any => research_master::models::LicensePolicy::Any,
+            LicenseFilter::Open => research_master::models::LicensePolicy::Open,
+            LicenseFilter::Ignore => research_master::models::LicensePolicy::Ignore,
+        }
+    }
+}
+
 /// Citation style for formatting
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 enum CitationStyle {
@@ -853,15 +897,12 @@ async fn main() -> Result<()> {
     // Set timeout
     tokio::time::sleep(Duration::from_secs(0)).await; // Just to ensure runtime is initialized
 
-    // Load configuration from file if specified or found in default locations
-    let _config = if let Some(config_path) = &cli.config {
-        Some(load_config(config_path)?)
-    } else if let Some(config_path) = find_config_file() {
+    if let Some(config_path) = cli.config.clone().or_else(find_config_file) {
+        let config = load_config(&config_path)?;
         tracing::info!("Using config file: {}", config_path.display());
-        Some(load_config(&config_path)?)
-    } else {
-        None
-    };
+        research_master::config::set_config(config)
+            .map_err(|_| anyhow::anyhow!("Configuration already initialized"))?;
+    }
 
     // Create source registry
     let registry = SourceRegistry::new();
@@ -880,6 +921,7 @@ async fn main() -> Result<()> {
             dedup,
             dedup_strategy,
             fetch_details,
+            license,
         }) => {
             let mut search_query = SearchQuery::new(&query);
             search_query.max_results = max_results;
@@ -898,6 +940,7 @@ async fn main() -> Result<()> {
             search_query.category = category;
             search_query.author = author;
             search_query.fetch_details = fetch_details;
+            search_query.license_policy = license.policy();
 
             let sources = get_sources(&registry, source, SourceCapabilities::SEARCH);
             let all_papers = Arc::new(Mutex::new(Vec::new()));
@@ -907,7 +950,7 @@ async fn main() -> Result<()> {
             let cache = if cli.no_cache {
                 None
             } else {
-                let c = CacheService::new();
+                let c = CacheService::from_config(get_config().cache);
                 let _ = c.initialize();
                 Some(c)
             };
@@ -954,10 +997,14 @@ async fn main() -> Result<()> {
                     let cache = cache_for_handle;
                     let pb = pb_for_handle;
 
-                    // Check cache first - if we have both cache and progress bar
-                    if let (Some(cache_service), Some(pb)) = (cache.as_ref(), pb.as_ref()) {
-                        match cache_service.get_search(&search_query, &src_id_for_handle) {
-                            research_master::utils::CacheResult::Hit(response) => {
+                    // A cached result is returned whether or not a progress bar exists.
+                    // Quiet and non-TTY runs have no progress bar, and previously fell
+                    // through to a fresh search on every invocation.
+                    if let Some(cache_service) = cache.as_ref() {
+                        if let research_master::utils::CacheResult::Hit(response) =
+                            cache_service.get_search(&search_query, &src_id_for_handle)
+                        {
+                            if let Some(pb) = pb.as_ref() {
                                 let elapsed = start.elapsed();
                                 let msg = format!(
                                     "{} papers ({:.1}s) [cached]",
@@ -970,6 +1017,13 @@ async fn main() -> Result<()> {
                                 pb.set_style(style);
                                 pb.set_message(msg);
                                 pb.finish();
+                            }
+                            return response.papers;
+                        }
+                    }
+                    if let (Some(cache_service), Some(pb)) = (cache.as_ref(), pb.as_ref()) {
+                        match cache_service.get_search(&search_query, &src_id_for_handle) {
+                            research_master::utils::CacheResult::Hit(response) => {
                                 return response.papers;
                             }
                             research_master::utils::CacheResult::Expired => {
@@ -1142,6 +1196,13 @@ async fn main() -> Result<()> {
                 all_papers = deduplicate_papers(all_papers, strategy);
             }
 
+            let license_policy = license.policy();
+            all_papers.retain(|paper| license_policy.allows(paper.license.as_deref()));
+            let source_id = (source != Source::All).then(|| source_to_id(source));
+            if let Err(error) = HistoryService::new().add_search(&query, source_id) {
+                tracing::warn!("Could not record search history: {}", error);
+            }
+
             output_papers(&all_papers, cli.output);
         }
 
@@ -1298,6 +1359,14 @@ async fn main() -> Result<()> {
             let result = src.download(&request).await?;
 
             if result.success {
+                if let Err(error) = HistoryService::new().add_download(
+                    &paper_id,
+                    src.id(),
+                    None,
+                    Some(&result.path),
+                ) {
+                    tracing::warn!("Could not record download history: {}", error);
+                }
                 if !cli.quiet {
                     eprintln!("Downloaded {} bytes to {}", result.bytes, result.path);
                 }
@@ -1321,6 +1390,9 @@ async fn main() -> Result<()> {
             let result = src.read(&request).await?;
 
             if result.success {
+                if let Err(error) = HistoryService::new().add_view(&paper_id, src.id(), None) {
+                    tracing::warn!("Could not record read history: {}", error);
+                }
                 let text = result.text;
                 if let Some(output_path) = output_file {
                     std::fs::write(&output_path, text)?;
@@ -1452,6 +1524,10 @@ async fn main() -> Result<()> {
             }
         }
 
+        Some(Commands::Panel { host, port }) => {
+            panel::run(&host, port).await?;
+        }
+
         Some(Commands::Dedupe {
             input,
             output_file,
@@ -1496,7 +1572,7 @@ async fn main() -> Result<()> {
         }
 
         Some(Commands::Cache { command }) => {
-            let cache = CacheService::new();
+            let cache = CacheService::from_config(get_config().cache);
             cache.initialize()?;
 
             match command {
@@ -2248,7 +2324,7 @@ directory = "~/.cache/research-master"
 
             if all || (cache && history && downloads) {
                 // Clear everything
-                let cache_service = CacheService::new();
+                let cache_service = CacheService::from_config(config.cache.clone());
                 cache_service.clear_all()?;
                 println!("Cleared all cache data.");
                 let history = HistoryService::new();
@@ -2328,17 +2404,7 @@ directory = "~/.cache/research-master"
                     registry.with_capability(research_master::sources::SourceCapabilities::SEARCH);
 
                 for source in &search_sources {
-                    let search_query = SearchQuery {
-                        query: paper_id.clone(),
-                        max_results: 1,
-                        year: None,
-                        sort_by: None,
-                        sort_order: None,
-                        filters: std::collections::HashMap::new(),
-                        author: None,
-                        category: None,
-                        fetch_details: true,
-                    };
+                    let search_query = SearchQuery::new(paper_id.clone()).max_results(1);
                     match source.search(&search_query).await {
                         Ok(response) => {
                             if !response.papers.is_empty() {
@@ -2440,6 +2506,9 @@ fn source_to_id(source: Source) -> &'static str {
         Source::EuropePmc => "europe_pmc",
         Source::Core => "core",
         Source::Zenodo => "zenodo",
+        Source::DataCite => "datacite",
+        Source::Inspire => "inspire",
+        Source::Ads => "ads",
         Source::Unpaywall => "unpaywall",
         Source::Mdpi => "mdpi",
         Source::Jstor => "jstor",
@@ -3222,6 +3291,7 @@ mod tests {
                 dedup,
                 dedup_strategy,
                 fetch_details,
+                license,
             }) => {
                 assert_eq!(query, "transformer");
                 assert_eq!(*source, Source::Arxiv);
@@ -3234,6 +3304,7 @@ mod tests {
                 assert!(*dedup);
                 assert_eq!(*dedup_strategy, Some(DedupStrategy::Mark));
                 assert!(*fetch_details); // Default is true
+                assert_eq!(*license, LicenseFilter::Any);
             }
             _ => panic!("Expected Search command"),
         }
@@ -3259,6 +3330,9 @@ mod tests {
             Source::EuropePmc,
             Source::Core,
             Source::Zenodo,
+            Source::DataCite,
+            Source::Inspire,
+            Source::Ads,
             Source::Unpaywall,
             Source::Mdpi,
             Source::Jstor,
@@ -3273,7 +3347,7 @@ mod tests {
             Source::GoogleScholar,
             Source::All,
         ];
-        assert_eq!(variants.len(), 29);
+        assert_eq!(variants.len(), 32);
     }
 
     #[test]
@@ -3295,6 +3369,9 @@ mod tests {
             (Source::EuropePmc, "europe_pmc"),
             (Source::Core, "core"),
             (Source::Zenodo, "zenodo"),
+            (Source::DataCite, "datacite"),
+            (Source::Inspire, "inspire"),
+            (Source::Ads, "ads"),
             (Source::Unpaywall, "unpaywall"),
             (Source::Mdpi, "mdpi"),
             (Source::Jstor, "jstor"),
