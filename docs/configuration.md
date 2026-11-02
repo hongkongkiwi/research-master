@@ -101,7 +101,7 @@ export RESEARCH_MASTER_DEFAULT_DISABLED_SOURCES="biorxiv,pmc,pubmed"
 ```
 
 **Available source IDs:**
-`arxiv`, `pubmed`, `biorxiv`, `semantic`, `openalex`, `crossref`, `iacr`, `pmc`, `hal`, `dblp`, `ssrn`, `core`, `europe_pmc`, `dimensions`, `ieee_xplore`, `zenodo`, `unpaywall`, `mdpi`, `jstor`, `scispace`, `acm`, `connected_papers`, `doaj`, `worldwidescience`, `osf`, `base`, `springer`, `google_scholar`
+`arxiv`, `pubmed`, `biorxiv`, `medrxiv`, `semantic`, `openalex`, `orcid`, `crossref`, `iacr`, `pmc`, `hal`, `dblp`, `ssrn`, `core`, `citeseerx`, `europe_pmc`, `dimensions`, `ieee_xplore`, `zenodo`, `openaire`, `datacite`, `inspire`, `ads`, `clinical_trials`, `unpaywall`, `mdpi`, `jstor`, `scispace`, `acm`, `connected_papers`, `doaj`, `worldwidescience`, `osf`, `base`, `springer`, `google_scholar`
 
 ### API Keys (Optional)
 
@@ -150,6 +150,27 @@ export RESEARCH_MASTER_DEFAULT_DISABLED_SOURCES="biorxiv,pmc,pubmed"
 export RESEARCH_MASTER_RATE_LIMITS_DEFAULT_REQUESTS_PER_SECOND=0
 ```
 
+### Proxy Settings
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `RESEARCH_MASTER_PROXY` | Single proxy URL applied to both HTTP and HTTPS when the scheme-specific variables below are unset | None |
+| `HTTP_PROXY` | Proxy for HTTP requests | None |
+| `HTTPS_PROXY` | Proxy for HTTPS requests | None |
+| `NO_PROXY` | Comma-separated hosts that bypass the proxy (`*` bypasses everything) | None |
+
+Proxy URLs support `http://`, `https://`, `socks5://`, and `socks5h://` schemes. The scheme only selects how the proxy itself is reached; the variable that is set decides which traffic is proxied (`HTTP_PROXY` scopes to HTTP requests, `HTTPS_PROXY` to HTTPS requests):
+
+```bash
+export RESEARCH_MASTER_PROXY=socks5://127.0.0.1:1080
+# or per scheme:
+export HTTP_PROXY=http://proxy:8080
+export HTTPS_PROXY=http://proxy:8080
+export NO_PROXY=localhost,127.0.0.1
+```
+
+All source lookups and the `web_search`, `web_extract`, and `github_search` tools honor this configuration. The CLI flags `--http-proxy`, `--https-proxy`, and `--no-proxy` override the environment variables. `RESEARCH_MASTER_PROXY_HTTP` and `RESEARCH_MASTER_PROXY_HTTPS` (format: `source_id:proxy_url`) set per-source proxies.
+
 ### Download Settings
 
 | Variable | Description | Default |
@@ -157,6 +178,25 @@ export RESEARCH_MASTER_RATE_LIMITS_DEFAULT_REQUESTS_PER_SECOND=0
 | `RESEARCH_MASTER_DOWNLOADS_DEFAULT_PATH` | Default directory for PDF downloads | `./downloads` |
 | `RESEARCH_MASTER_DOWNLOADS_ORGANIZE_BY_SOURCE` | Create subdirectories per source | `true` |
 | `RESEARCH_MASTER_DOWNLOADS_MAX_FILE_SIZE_MB` | Maximum file size for downloads (MB) | `100` |
+
+### Zotero Sync
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ZOTERO_API_KEY` | API key for the Zotero sync tools (required; create at zotero.org/settings/keys) | None |
+| `ZOTERO_USER_ID` | Personal Zotero library id | None |
+| `ZOTERO_GROUP_ID` | Group Zotero library id (used when `ZOTERO_USER_ID` is unset) | None |
+| `RESEARCH_MASTER_ZOTERO_API_URL` | Zotero API base URL override | `https://api.zotero.org` |
+
+### Local Data Stores
+
+Each variable names a directory holding one JSONL file; defaults live in the user config dir (e.g. `~/Library/Application Support/research-master/` on macOS).
+
+| Variable | File |
+|----------|------|
+| `RESEARCH_MASTER_LIBRARY_PATH` | `library.jsonl` (saved papers) |
+| `RESEARCH_MASTER_WATCHES_PATH` | `watches.jsonl` (topic watches) |
+| `RESEARCH_MASTER_SCREENINGS_PATH` | `screenings.jsonl` (screening sessions) |
 
 ### Logging
 

@@ -1,6 +1,6 @@
 # Available MCP Tools
 
-Once connected via MCP, the following **36 unified tools** are available. These tools automatically select the best source based on your input, or you can specify a source explicitly.
+Once connected via MCP, the following **42 unified tools** are available. These tools automatically select the best source based on your input, or you can specify a source explicitly.
 
 ## Core Research Tools
 
@@ -15,6 +15,12 @@ Search for papers across all available research sources or a specific source.
 - `year` (optional): Year filter (e.g., "2020", "2018-2022", "2010-", "-2015")
 - `category` (optional): Category/subject filter
 - `license` (optional): `any` (default) returns all results; `open` retains works with a recognized open reuse license and excludes works without license metadata; `ignore` skips the license filter. This controls work metadata, not the API provider's access terms. To exclude providers, set `RESEARCH_MASTER_DISABLED_SOURCES` or specify `source`.
+- `include_types` (optional): Array of type tokens to keep (e.g. `["review", "meta-analysis"]`). Tokens match case-insensitively as substrings against the paper's reported type and categories. Papers whose source reports no type or categories still pass a non-empty include list unless `strict_types` is true.
+- `exclude_types` (optional): Array of type tokens to drop; exclusions win over `include_types`.
+- `strict_types` (optional): Together with `include_types`, also drop papers with no reported type/categories (default: false). Only some sources report types (OpenAlex and PubMed among them).
+- `filters` (optional): Object of source-specific key/value filters; sources ignore keys they do not support. Examples: `{"mesh": "Neoplasms"}` on PubMed, `{"provider": "psyarxiv"}` on OSF.
+
+Type filters push down where a source supports it: PubMed translates recognized tokens into `[pt]` query tags (`review`, `meta-analysis`, `systematic-review`, `rct`/`randomized-controlled-trial`, `clinical-trial`, `case-report`, `guideline`, `journal-article`/`article`), and OpenAlex sets its `type` verbatim; other sources post-filter.
 
 Search results are cached per source when `RESEARCH_MASTER_CACHE_ENABLED=true`. The `max_results` value applies per source, not to the merged response.
 
@@ -57,6 +63,7 @@ Get detailed metadata for a specific paper. The source is auto-detected from the
 **Auto-detection patterns:**
 - `arXiv:xxxx` or `xxxx.xxxx` (numeric) → arXiv
 - `PMCxxxxxxx` → PMC
+- `NCTxxxxxxxx` (8 digits, case-insensitive) → ClinicalTrials.gov
 - `10.xxxx/xxxxxx` (DOI) → Source with DOI lookup capability
 - `CORX:xxxxx` → CORE
 - `hal-xxxxxxx` → HAL
@@ -217,6 +224,7 @@ The unified tools use intelligent source auto-detection:
 |-----------------|-----------------|
 | `arXiv:1234.5678` or `1234.5678` | arXiv |
 | `PMC12345678` | PMC |
+| `NCT03850691` | ClinicalTrials.gov |
 | `10.xxxx/xxxxxx` | Source with DOI lookup |
 | `CORX:xxxxx` | CORE |
 | `hal-xxxxxxx` | HAL |
@@ -260,22 +268,129 @@ The unified tools automatically detect the appropriate source, so you don't need
 
 ## Local Library
 
-- `library_add` / `library_list` / `library_remove`: persistent saved papers (JSONL at the user config dir) with optional collections and tags; re-saving within the same collection updates in place.
-- `library_search` / `library_ask`: keyword retrieval over saved papers with fuzzy term matching and matched-term reporting. Retrieval only, no generated synthesis.
+- `library_add` / `library_list` / `library_remove`: persistent saved papers (JSONL at the user config dir) with optional collections and tags; re-saving within the same collection updates in place. When the paper has a DOI, `library_add` checks OpenAlex retraction status best-effort and stores `retraction_status` (`retracted`, `not_retracted`, or `unknown`), `retraction_date`, and `retraction_checked_at`.
+- `library_search` / `library_ask`: keyword retrieval over saved papers with fuzzy term matching and matched-term reporting. Retrieval only, no generated synthesis. `library_search` accepts `retracted_only` (boolean) to return only entries whose retraction check came back positive.
 
 ## Watches
 
-- `watch_topic` / `list_watches` / `check_alerts` / `unwatch_topic`: save topic queries against the arXiv announcement feed and poll for new papers since the last check. State is JSONL at the user config dir.
+- `watch_topic` / `list_watches` / `check_alerts` / `unwatch_topic`: save topic queries against the arXiv announcement feed and poll for new papers since the last check. State is JSONL at the user config dir. Alerts annotate new DOI-bearing hits with `retracted: true` and `retraction_date` (best-effort, up to 5 checks per run; the response reports `retraction_checks_skipped` when the cap is hit).
+
+## Zotero Sync
+
+### zotero_save
+
+Resolve a paper by ID or DOI and save it to your Zotero library as a `journalArticle` item. Requires `ZOTERO_API_KEY` plus `ZOTERO_USER_ID` (or `ZOTERO_GROUP_ID`; the user library wins if both are set).
+
+**Parameters:**
+- `paper_id` (required): Paper id, arXiv id, or DOI to resolve and save
+- `source` (optional): Override source auto-detection
+
+**Example:**
+```json
+{
+  "paper_id": "1706.03762"
+}
+```
+
+### zotero_search
+
+Search your Zotero library by keyword (matches title and creator fields).
+
+**Parameters:**
+- `query` (required): Keyword query
+- `limit` (optional): Maximum items (default: 10, cap: 50)
+
+**Example:**
+```json
+{
+  "query": "attention",
+  "limit": 20
+}
+```
+
+## Screening Workflow
+
+Systematic-review screening with PRISMA counting. Sessions persist as `screenings.jsonl` in the user config dir (`RESEARCH_MASTER_SCREENINGS_PATH` names an alternative directory). The built-in prompt `systematic_review_screening` walks a client through the full loop.
+
+### screening_start
+
+Start a screening session from a cross-source query or an explicit candidate list.
+
+**Parameters:**
+- `inclusion_criteria` (required): Criteria a paper must meet
+- `exclusion_criteria` (required): Criteria that disqualify a paper
+- `query` (optional): Search string run across all sources to build the candidate list
+- `max_results` (optional): Per-source result cap for the query (default: 50, cap: 200); query results are deduplicated
+- `papers` (optional): Explicit candidates instead of a query; each object needs at least `paper_id` and `title`
+
+**Example:**
+```json
+{
+  "inclusion_criteria": "RCTs of CBT for insomnia in adults",
+  "exclusion_criteria": "non-English, no control group",
+  "query": "CBT insomnia randomized",
+  "max_results": 100
+}
+```
+
+### screening_next
+
+Get the next undecided candidates in a session. Each candidate carries `extracted_statistics`: effect sizes (d, g, r), odds/risk/hazard ratios, confidence intervals, p-values, and sample sizes pulled from the abstract by regex (capped at 20 per abstract).
+
+**Parameters:**
+- `session_id` (required): Session id from screening_start
+- `limit` (optional): Maximum candidates (default: 10, cap: 50)
+
+**Example:**
+```json
+{
+  "session_id": "s-20261102-1790000000000-1",
+  "limit": 10
+}
+```
+
+### screening_decide
+
+Record decisions for a batch. The `reason` on an exclude becomes the PRISMA exclusion category.
+
+**Parameters:**
+- `session_id` (required): Session id from screening_start
+- `decisions` (required): Array of `{ "paper_id", "decision" ("include" | "exclude" | "uncertain"), "reason" }`
+
+**Example:**
+```json
+{
+  "session_id": "s-20261102-1790000000000-1",
+  "decisions": [
+    { "paper_id": "2301.12345", "decision": "include" },
+    { "paper_id": "2302.04567", "decision": "exclude", "reason": "no control group" }
+  ]
+}
+```
+
+### screening_summary
+
+PRISMA flow summary for a session: `identified`, `duplicates_removed`, `screened`, `excluded_by_reason`, `included`, `uncertain`, `remaining`, plus a one-line `summary_text`.
+
+**Parameters:**
+- `session_id` (required): Session id from screening_start
+
+**Example:**
+```json
+{
+  "session_id": "s-20261102-1790000000000-1"
+}
+```
 
 ## Citation Styles and Prompts
 
 - `format_citation_style`: in-text citation in any CSL style from the Zotero archive (e.g. `nature`, `ieee`, `vancouver`), powered by hayagriva.
-- Built-in MCP prompts: `literature_review`, `deep_paper_analysis`, `research_discovery`, `citation_audit`. Clients list them via the standard prompts API.
+- Built-in MCP prompts: `literature_review`, `deep_paper_analysis`, `research_discovery`, `citation_audit`, `systematic_review_screening`. Clients list them via the standard prompts API.
 
 ## Env Overrides
 
 - `RESEARCH_MASTER_HTTP_TOKEN`: bearer token required on every request to `mcp --http` when set.
-- `RESEARCH_MASTER_LIBRARY_PATH`, `RESEARCH_MASTER_WATCHES_PATH`: directory overrides for the JSONL stores.
+- `RESEARCH_MASTER_LIBRARY_PATH`, `RESEARCH_MASTER_WATCHES_PATH`, `RESEARCH_MASTER_SCREENINGS_PATH`: directory overrides for the JSONL stores.
 
 ## Related Documentation
 

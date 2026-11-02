@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- ClinicalTrials.gov source (36th source, 32nd in the default build): study search, NCT id lookup and auto-detection, DOI lookup via the first study citing the DOI
+- Zotero sync: `zotero_save` resolves a paper into your Zotero library and `zotero_search` keyword-searches it (`ZOTERO_API_KEY` required, plus `ZOTERO_USER_ID` or `ZOTERO_GROUP_ID`; `RESEARCH_MASTER_ZOTERO_API_URL` overrides the API base)
+- Systematic-review screening: `screening_start`, `screening_next`, `screening_decide` and `screening_summary` tools with PRISMA counting, plus the `systematic_review_screening` prompt; statistics extracted from abstracts (effect sizes, odds/risk/hazard ratios, CIs, p-values, sample sizes) appear in `screening_next`
+- Retraction flags: `library_add` records OpenAlex retraction status for DOI-bearing papers, `library_search` gained `retracted_only`, and watch alerts annotate retracted new hits
 - `web_extract` MCP tool: fetch a URL and return readable text (HTML reduced to title plus block text; PDF URLs run through the PDF extractor)
 - `github_search` MCP tool: find repositories with a paper's code, datasets, and tools (`GITHUB_API_KEY` optional; a rejected key falls back to anonymous search)
 - `web_search` multi-provider fallback: tries Exa, then Tavily (`TAVILY_API_KEY`), then Brave (`BRAVE_API_KEY`) using the first configured key, and falls through on provider failure
@@ -19,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `OPENALEX_API_KEY` support; OpenAlex meters authenticated search endpoints
 
 ### Changed
+- MCP tools: 42 (up from 36)
+- `search_papers` type filtering: `include_types`/`exclude_types`/`strict_types` plus a generic `filters` object; PubMed maps recognized tokens to `[pt]` tags, accepts MeSH clauses via `filters.mesh`, and reports `paper_type` from publication types, OSF accepts a hosted-provider `filters.provider` and reports all results as `preprint`, and OpenAlex reports types verbatim with venue metadata
+- `RESEARCH_MASTER_PROXY` sets one proxy URL for both schemes when `HTTP_PROXY`/`HTTPS_PROXY` are unset; socks5/socks5h URLs are supported and the `web_search`, `web_extract` and `github_search` clients honor proxy configuration
 - SciSpace, Connected Papers and WorldWideScience removed from default features; their public endpoints no longer resolve (verified 2026-11-02). Still buildable with `--features scispace,connected_papers,worldwidescience`
 - Sources with a missing API key now return an error naming the key and signup URL instead of silently returning empty results; network failures and blocks propagate instead of masking as zero hits
 - MCP `search_papers` deduplicates results across sources

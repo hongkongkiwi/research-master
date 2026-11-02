@@ -1,6 +1,6 @@
 # Research Sources
 
-Research Master MCP supports **28 academic research sources** with different pricing models, API requirements, and capabilities.
+Research Master MCP supports **36 academic research sources** (32 in the default build) with different pricing models, API requirements, and capabilities.
 
 ## Sources Overview
 
@@ -9,12 +9,15 @@ Research Master MCP supports **28 academic research sources** with different pri
 | [arXiv](https://arxiv.org) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | [Semantic Scholar](https://semanticscholar.org) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | [OpenAlex](https://openalex.org) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| [ORCID](https://orcid.org) | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | [PubMed](https://pubmed.ncbi.nlm.nih.gov) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | [PMC](https://www.ncbi.nlm.nih.gov/pmc) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | [bioRxiv](https://biorxiv.org) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | [medRxiv](https://medrxiv.org) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| [ClinicalTrials.gov](https://clinicaltrials.gov) | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | [HAL](https://hal.science) | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | [DBLP](https://dblp.org) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| [CiteSeerX](https://citeseerx.ist.psu.edu) | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | [CrossRef](https://www.crossref.org) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | [IACR ePrint](https://eprint.iacr.org) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | [SSRN](https://www.ssrn.com) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
@@ -23,6 +26,7 @@ Research Master MCP supports **28 academic research sources** with different pri
 | [Dimensions](https://app.dimensions.ai) | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ |
 | [IEEE Xplore](https://ieeexplore.ieee.org) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | [Zenodo](https://zenodo.org) | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
+| [OpenAIRE](https://openaire.eu) | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
 | [DataCite](https://datacite.org) | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | [INSPIRE-HEP](https://inspirehep.net) | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | [NASA ADS](https://ui.adsabs.harvard.edu) | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
@@ -53,8 +57,11 @@ Research Master MCP supports **28 academic research sources** with different pri
 | [PubMed](https://pubmed.ncbi.nlm.nih.gov) | Free | No | Unlimited | 3 requests/sec | NIH funded, no API key needed |
 | [PMC](https://www.ncbi.nlm.nih.gov/pmc) | Free | No | Unlimited | 3 requests/sec | Full-text biomedical literature |
 | [bioRxiv](https://biorxiv.org) | Free | No | Unlimited | 1 request/sec | Biology preprints |
+| [medRxiv](https://medrxiv.org) | Free | No | Unlimited | Global default | Health sciences preprints |
+| [ORCID](https://orcid.org) | Free | No | Unlimited | 2 requests/sec | Researcher profiles and works |
 | [HAL](https://hal.science) | Free | No | Unlimited | 1 request/sec | French open access repository |
 | [DBLP](https://dblp.org) | Free | No | Unlimited | 1 request/sec | Computer science bibliography only |
+| [CiteSeerX](https://citeseerx.ist.psu.edu) | Free | No | Unlimited | Global default | Computer science paper search |
 | [CrossRef](https://www.crossref.org) | Free | No | Unlimited | 1 request/sec | DOI lookup only, no full search |
 | [IACR ePrint](https://eprint.iacr.org) | Free | No | Unlimited | 1 request/sec | Cryptology research only |
 | [SSRN](https://www.ssrn.com) | Free | No | Limited | 1 request/sec | Social sciences preprints |
@@ -63,6 +70,8 @@ Research Master MCP supports **28 academic research sources** with different pri
 | [Dimensions](https://app.dimensions.ai) | Free | No | Unlimited | 1 request/sec | Research metrics and discovery |
 | [IEEE Xplore](https://ieeexplore.ieee.org) | Paid | Required* | Yes | 3 requests/sec | Free API key from developer.ieee.org |
 | [Zenodo](https://zenodo.org) | Free | No | Unlimited | 1 request/sec | CERN-hosted open science repository |
+| [OpenAIRE](https://openaire.eu) | Free | No | Unlimited | Global default | EU open access research aggregator |
+| [ClinicalTrials.gov](https://clinicaltrials.gov) | Free | No | Unlimited | Global default | NIH clinical study registry (API v2) |
 | [DataCite](https://datacite.org) | Free | No | Unlimited | 1 request/sec | DOI metadata registry; set `RESEARCH_MASTER_USER_AGENT` with contact address |
 | [INSPIRE-HEP](https://inspirehep.net) | Free | No | Unlimited | 1 request/sec | High-energy physics literature database |
 | [NASA ADS](https://ui.adsabs.harvard.edu) | Free | Required* | Yes | ~5 requests/sec | Astronomy and physics; token from ui.adsabs.harvard.edu (`ADS_API_KEY`) |
@@ -89,9 +98,11 @@ The following sources are completely free to use without any API key requirement
 
 **arXiv** is the premier open access preprint repository for physics, mathematics, computer science, and related fields. Operated by Cornell University, it provides unlimited access to millions of preprints without any API key or registration requirements.
 
-**PubMed** and **PMC** are NIH-funded databases providing free access to biomedical and life sciences literature. PubMed contains abstracts and citations, while PMC provides full-text articles. Both are completely free and require no API key.
+**PubMed** and **PMC** are NIH-funded databases providing free access to biomedical and life sciences literature. PubMed contains abstracts and citations, while PMC provides full-text articles. Both are completely free and require no API key. PubMed results carry `paper_type` from the article's publication types (e.g. `Journal Article;Review`), and `search_papers` accepts a `filters.mesh` value with semicolon-separated MeSH clauses: `Term` explodes to all narrower headings, `Term:noexp` restricts to the exact heading, `Term/subheading` qualifies the heading with a subheading, and a clause that already contains a bracket passes through verbatim.
 
-**OpenAlex** is an open infrastructure funded by various academic organizations, providing a comprehensive catalog of scholarly papers, authors, institutions, and more. List and search endpoints are metered: keyless calls share a small free daily budget per IP address, while a free API key (`OPENALEX_API_KEY`, created at openalex.org/settings/api) gets its own larger daily budget. The retired mailto "polite pool" is gone; `OPENALEX_EMAIL` now only identifies your requests.
+**ClinicalTrials.gov** is the NIH registry of clinical studies, queried through its free API v2 without a key. It supports search; study records have no DOI of their own, so a DOI query (`source: "clinical_trials"`) returns the first study citing that DOI rather than the DOI's own paper, and is deliberately excluded from the cross-source `lookup_by_doi` fan-out for that reason. Paper IDs are NCT numbers (e.g. `NCT03850691`, case-insensitive) and results carry `paper_type` `clinical trial` with the study's overall status in `status`.
+
+**OpenAlex** is an open infrastructure funded by various academic organizations, providing a comprehensive catalog of scholarly papers, authors, institutions, and more. List and search endpoints are metered: keyless calls share a small free daily budget per IP address, while a free API key (`OPENALEX_API_KEY`, created at openalex.org/settings/api) gets its own larger daily budget. The retired mailto "polite pool" is gone; `OPENALEX_EMAIL` now only identifies your requests. Results carry `paper_type` from the work's `type` verbatim, `categories` from topic display names, and a `venue` key in `extra` with the publishing source's display name; retracted works are flagged with `is_retracted: true`.
 
 **HAL** is France's national open access repository, providing free access to academic papers from French institutions. It requires no API key and offers unlimited queries.
 
@@ -113,7 +124,7 @@ The following sources are completely free to use without any API key requirement
 
 **WorldWideScience** is a global science gateway providing access to scientific databases from multiple countries. It's completely free and operated by the scientific community.
 
-**OSF Preprints** provides access to preprints from the Open Science Framework, covering many disciplines. No API key is required.
+**OSF Preprints** provides access to preprints from the Open Science Framework, covering many disciplines. No API key is required. A `filters.provider` value on `search_papers` restricts results to one hosted preprint provider by slug (e.g. `psyarxiv`, `socarxiv`, `engrxiv`, `eartharxiv`, `edarxiv`, `mindrxiv`, `mediarxiv`, `lawarxiv`; 32 providers total). All OSF results carry `paper_type` `preprint`.
 
 **BASE** (Bielefeld Academic Search Engine) aggregates content from over 4,000 data sources. It provides free access to academic resources.
 
@@ -219,6 +230,8 @@ export RESEARCH_MASTER_RATE_LIMITS_DEFAULT_REQUESTS_PER_SECOND=0
 - **Keyword search** with relevance ranking
 - **Year range filtering**: `"2020"`, `"2018-2022"`, `"2010-"`, `"-2015"`
 - **Category/subject filtering** for categorized sources
+- **Type filtering**: `include_types`/`exclude_types` tokens matched case-insensitively against reported types and categories, with `strict_types` for strict behavior
+- **Source-specific filters**: PubMed MeSH clauses (`filters.mesh`) and OSF provider slugs (`filters.provider`)
 - **Author-specific search** (supported sources)
 - **DOI-based lookup** across multiple sources
 

@@ -9,7 +9,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 
 ## Overview
 
-Research Master gives AI assistants unified access to **35 research sources** (31 enabled by default) through the Model Context Protocol (MCP). It works with Claude Desktop, Zed, Cursor, and other MCP clients for literature search, paper discovery, download, and citation analysis.
+Research Master gives AI assistants unified access to **36 research sources** (32 enabled by default) through the Model Context Protocol (MCP). It works with Claude Desktop, Zed, Cursor, and other MCP clients for literature search, paper discovery, download, and citation analysis.
 
 ## Quick Start
 
@@ -54,13 +54,14 @@ See [Tools](docs/tools.md) for all available MCP tools.
 
 ## Features
 
-- **35 research sources** (31 by default): arXiv, Semantic Scholar, OpenAlex, PubMed, PMC, bioRxiv, DataCite, INSPIRE-HEP, NASA ADS, and [more](docs/sources.md). SciSpace, Connected Papers, WorldWideScience (retired public endpoints) and Google Scholar are opt-in via `--features`
+- **36 research sources** (32 by default): arXiv, Semantic Scholar, OpenAlex, PubMed, ClinicalTrials.gov, PMC, bioRxiv, DataCite, INSPIRE-HEP, NASA ADS, and [more](docs/sources.md). SciSpace, Connected Papers, WorldWideScience (retired public endpoints) and Google Scholar are opt-in via `--features`
 - **Unified Search**: One query fans out across all enabled sources, with results deduplicated across sources
 - **Smart Source Detection**: Automatically identifies paper IDs (arXiv, PMC, DOI, HAL, IACR, Zenodo, etc.)
 - **PDF Download and Text Extraction**: Save papers locally and extract full text (poppler, with lopdf fallback)
 - **Citation Analysis and Evidence**: Forward citations, references, related papers, citation graphs, Scite-style tallies and retraction flags
 - **Bounded Reading**: Section outlines and per-section reads, plus arXiv LaTeX source, that stay within LLM context limits
 - **Local Library and Watches**: Save papers to collections, search them, and poll arXiv for new papers on saved topics
+- **General Science Workflows**: Systematic-review screening with PRISMA counts, retraction flags in the library and watch alerts, Zotero sync, and ClinicalTrials.gov study search
 - **CSL Styles**: Format citations in thousands of archived CSL styles via hayagriva
 - **License Filter**: `--license open` keeps only works with a recognized open reuse license
 - **Export and Citation Formatting**: BibTeX, CSV, JSON, RIS export; APA, MLA, Chicago, BibTeX cite styles

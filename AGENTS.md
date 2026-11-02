@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Research Master MCP is a Model Context Protocol (MCP) server that provides unified access to 35 academic research sources (31 enabled by default; arXiv, Semantic Scholar, PubMed, OpenAlex, Europe PMC, DataCite, INSPIRE-HEP, NASA ADS, etc.) for searching, downloading, and analyzing academic papers.
+Research Master MCP is a Model Context Protocol (MCP) server that provides unified access to 36 academic research sources (32 enabled by default; arXiv, Semantic Scholar, PubMed, OpenAlex, Europe PMC, DataCite, INSPIRE-HEP, NASA ADS, etc.) for searching, downloading, and analyzing academic papers.
 
 ## Build & Test Commands
 
@@ -46,8 +46,8 @@ cargo fmt
 
 - **`src/lib.rs`** - Library root, exports public API
 - **`src/main.rs`** - CLI entry point using clap for argument parsing
-- **`src/sources/`** - Plugin-based architecture with 35 research sources
-- **`src/mcp/`** - MCP protocol server implementation (36 unified tools)
+- **`src/sources/`** - Plugin-based architecture with 36 research sources
+- **`src/mcp/`** - MCP protocol server implementation (42 unified tools)
 - **`src/models/`** - Core data structures (Paper, SearchQuery, etc.)
 - **`src/panel.rs`** - Local web panel for browsing search and download history
 - **`src/config/`** - Environment and file-based configuration
@@ -126,6 +126,11 @@ Sources use `SourceError` enum with conversion implementations from `reqwest::Er
 | `SPRINGER_API_KEY` | Required for Springer | None |
 | `CORE_API_KEY` | API key for CORE | None |
 | `EXA_API_KEY` | Enables the MCP `web_search` tool | None |
+| `ZOTERO_API_KEY` | Required for the Zotero sync tools | None |
+| `ZOTERO_USER_ID` / `ZOTERO_GROUP_ID` | Zotero library id (user wins if both set) | None |
+| `RESEARCH_MASTER_ZOTERO_API_URL` | Zotero API base URL override | `https://api.zotero.org` |
+| `RESEARCH_MASTER_SCREENINGS_PATH` | Directory for the screening store `screenings.jsonl` | User config dir |
+| `RESEARCH_MASTER_PROXY` | Proxy for HTTP and HTTPS when `HTTP_PROXY`/`HTTPS_PROXY` are unset (supports socks5/socks5h) | None |
 | `GOOGLE_SCHOLAR_ENABLED` | Enable Google Scholar feature | false |
 | `RESEARCH_MASTER_RATE_LIMITS_DEFAULT_REQUESTS_PER_SECOND` | Global rate limit | 5 |
 
@@ -134,16 +139,18 @@ Sources use `SourceError` enum with conversion implementations from `reqwest::Er
 Paper ID formats are auto-detected in `unified_tools.rs`:
 - `arXiv:1234.5678` or numeric → arXiv
 - `PMC12345678` → PMC
+- `NCTxxxxxxxx` → clinical_trials
 - `hal-xxxxxxx` → HAL
 - `xxxx/xxxx` (single slash) → IACR
 - `10.xxxx/xxxxxx` → DOI lookup (Semantic Scholar preferred)
 
-## Research Sources (35 total; 31 in the default build)
+## Research Sources (36 total; 32 in the default build)
 
 | Source | Capabilities | Description |
 |--------|-------------|-------------|
 | arXiv | Search, Download | Preprint papers in physics, math, CS, and more |
 | PubMed | Search, Citations | Biomedical literature from NIH/NLM |
+| ClinicalTrials.gov | Search, DOI Lookup* | ClinicalTrials.gov study registry (*DOI query returns the citing study; excluded from `lookup_by_doi` fan-out) |
 | bioRxiv | Search, Download | Biology preprints |
 | medRxiv | Search, Download | Health sciences preprints |
 | Semantic Scholar | Search, Citations, Download | AI-powered academic search |
@@ -183,4 +190,4 @@ Paper ID formats are auto-detected in `unified_tools.rs`:
 - `core` - arxiv, pubmed, semantic
 - `preprints` - arxiv, biorxiv, medrxiv
 - `full` - All sources except google_scholar (includes scispace, connected_papers, worldwidescience)
-- default build - 31 sources: everything except google_scholar, scispace, connected_papers, worldwidescience
+- default build - 32 sources: everything except google_scholar, scispace, connected_papers, worldwidescience
