@@ -171,7 +171,18 @@ impl Source for OpenaireSource {
                 SourceError::NotFound(format!("Paper not found in OpenAIRE: {}", doi))
             })?;
 
-        self.parse_result(&result)
+        let paper = self.parse_result(&result)?;
+
+        // Never return a DOI-less record as a junk-success to the
+        // lookup_by_doi fan-out.
+        if paper.doi.as_deref().map(str::trim).unwrap_or("").is_empty() {
+            return Err(SourceError::NotFound(format!(
+                "OpenAIRE record for DOI {} has no DOI pid; skipping",
+                doi
+            )));
+        }
+
+        Ok(paper)
     }
 
     async fn download(&self, request: &DownloadRequest) -> Result<DownloadResult, SourceError> {
@@ -239,11 +250,13 @@ impl OpenaireSource {
             .title
             .as_ref()
             .and_then(|titles| titles.first_cloned())
+            .and_then(|title| title.text())
             .unwrap_or_default();
         let abstract_text = result
             .description
             .as_ref()
             .and_then(|descriptions| descriptions.first_cloned())
+            .and_then(|description| description.text())
             .unwrap_or_default();
 
         let pids = result.pid.as_ref().map(OneOrMany::as_slice).unwrap_or(&[]);
@@ -255,7 +268,7 @@ impl OpenaireSource {
                     .map(|classid| classid.eq_ignore_ascii_case("doi"))
                     .unwrap_or(false)
             })
-            .and_then(|pid| pid.value.clone())
+            .and_then(|pid| value_text(pid.value.as_ref()))
             .unwrap_or_default();
 
         let authors: String = result
@@ -264,14 +277,14 @@ impl OpenaireSource {
             .map(OneOrMany::as_slice)
             .unwrap_or(&[])
             .iter()
-            .filter_map(|creator| creator.name.clone())
+            .filter_map(|creator| creator.display_name())
             .collect::<Vec<_>>()
             .join("; ");
 
         let published_date = result
             .dateofacceptance
             .as_ref()
-            .and_then(|date| date.value.clone())
+            .and_then(|date| date.text())
             .unwrap_or_default();
 
         let urls: Vec<String> = result
@@ -288,7 +301,7 @@ impl OpenaireSource {
                     .map(OneOrMany::as_slice)
                     .unwrap_or(&[])
                     .iter()
-                    .cloned()
+                    .filter_map(|value| value.text())
             })
             .collect();
 
@@ -308,7 +321,7 @@ impl OpenaireSource {
             doi.clone()
         } else {
             pids.iter()
-                .filter_map(|pid| pid.value.clone())
+                .filter_map(|pid| value_text(pid.value.as_ref()))
                 .find(|pid| !pid.is_empty())
                 .unwrap_or_else(|| format!("openaire:{}", urlencoding::encode(&title)))
         };
@@ -372,14 +385,36 @@ struct OpenaireEntity {
     oaf_result: OpenairePublication,
 }
 
+/// Text-carrying OpenAIRE field: the legacy JSON API puts the content under
+/// "$", either as a string or a number (e.g. numeric pmid entries).
+#[derive(Debug, Clone, Deserialize)]
+struct OpenaireValue {
+    #[serde(rename = "$", default)]
+    value: Option<serde_json::Value>,
+}
+
+impl OpenaireValue {
+    fn text(&self) -> Option<String> {
+        value_text(self.value.as_ref())
+    }
+}
+
+fn value_text(value: Option<&serde_json::Value>) -> Option<String> {
+    match value? {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct OpenairePublication {
     #[serde(default)]
-    title: Option<OneOrMany<String>>,
+    title: Option<OneOrMany<OpenaireValue>>,
     #[serde(default)]
     creator: Option<OneOrMany<OpenaireCreator>>,
     #[serde(default)]
-    description: Option<OneOrMany<String>>,
+    description: Option<OneOrMany<OpenaireValue>>,
     #[serde(default)]
     pid: Option<OneOrMany<OpenairePid>>,
     #[serde(default)]
@@ -392,22 +427,32 @@ struct OpenairePublication {
 
 #[derive(Debug, Deserialize)]
 struct OpenaireCreator {
-    #[serde(rename = "$name")]
-    name: Option<String>,
+    #[serde(default, rename = "$")]
+    full: Option<serde_json::Value>,
+    #[serde(default, rename = "@name")]
+    given: Option<String>,
+    #[serde(default, rename = "@surname")]
+    surname: Option<String>,
+}
+
+impl OpenaireCreator {
+    fn display_name(&self) -> Option<String> {
+        if let Some(full) = value_text(self.full.as_ref()) {
+            return Some(full);
+        }
+        match (&self.given, &self.surname) {
+            (Some(given), Some(surname)) => Some(format!("{} {}", given, surname)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct OpenairePid {
     #[serde(rename = "@classid")]
     classid: Option<String>,
-    #[serde(rename = "$")]
-    value: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenaireValue {
-    #[serde(rename = "$")]
-    value: Option<String>,
+    #[serde(rename = "$", default)]
+    value: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -423,14 +468,18 @@ struct OpenaireInstance {
 
 #[derive(Debug, Deserialize)]
 struct OpenaireWebResource {
-    url: Option<OneOrMany<String>>,
+    url: Option<OneOrMany<OpenaireValue>>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum OneOrMany<T> {
-    One(T),
+    // Many MUST precede One: serde derive structs also accept sequence form
+    // (visit_seq), so with One first an array like `[item]` matches One(T)
+    // as a 1-element seq, feeding the item object into the struct's first
+    // field and silently defaulting everything else.
     Many(Vec<T>),
+    One(T),
 }
 
 impl<T> Default for OneOrMany<T> {
@@ -476,15 +525,26 @@ mod tests {
                         "metadata": {
                             "oaf:entity": {
                                 "oaf:result": {
-                                    "title": ["Mock Paper Title"],
-                                    "creator": [{"$name": "Ada Lovelace"}, {"$name": "Alan Turing"}],
-                                    "description": ["Mock abstract text."],
-                                    "pid": [{"@classid": "doi", "$": "10.1234/mock"}],
+                                    "title": [
+                                        {"@classid": "main title", "$": "Mock Paper Title"},
+                                        {"$": "mock paper title"}
+                                    ],
+                                    "creator": {
+                                        "@rank": "1",
+                                        "@name": "Ada",
+                                        "@surname": "Lovelace",
+                                        "$": "Lovelace, Ada"
+                                    },
+                                    "description": {"$": "Mock abstract text."},
+                                    "pid": [
+                                        {"@classid": "doi", "$": "10.1234/mock"},
+                                        {"@classid": "pmid", "$": 424242}
+                                    ],
                                     "dateofacceptance": {"$": "2024-05-01"},
                                     "bestaccessright": {"@classid": "OPEN"},
                                     "instance": {
                                         "webresource": {
-                                            "url": ["https://repo.example/mock.pdf", "https://repo.example/landing"]
+                                            "url": {"$": "https://repo.example/mock.pdf"}
                                         }
                                     }
                                 }
@@ -536,8 +596,15 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .first_cloned()
-                .as_deref(),
-            Some("Mock Paper Title")
+                .and_then(|title| title.text()),
+            Some("Mock Paper Title".to_string())
+        );
+        let pids = publication.pid.as_ref().unwrap().as_slice();
+        assert_eq!(
+            pids.iter()
+                .find(|pid| pid.classid.as_deref() == Some("pmid"))
+                .and_then(|pid| value_text(pid.value.as_ref())),
+            Some("424242".to_string())
         );
     }
 
@@ -550,7 +617,7 @@ mod tests {
             .unwrap();
         assert_eq!(paper.paper_id, "10.1234/mock");
         assert_eq!(paper.title, "Mock Paper Title");
-        assert_eq!(paper.authors, "Ada Lovelace; Alan Turing");
+        assert_eq!(paper.authors, "Lovelace, Ada");
         assert_eq!(paper.r#abstract, "Mock abstract text.");
         assert_eq!(paper.doi.as_deref(), Some("10.1234/mock"));
         assert_eq!(paper.url, "https://repo.example/mock.pdf");
@@ -591,5 +658,83 @@ mod tests {
         let many = OneOrMany::Many(vec!["one".to_string(), "two".to_string()]);
         assert_eq!(many.as_slice().len(), 2);
         assert_eq!(many.into_vec(), vec!["one".to_string(), "two".to_string()]);
+
+        let text = OpenaireValue {
+            value: Some(serde_json::Value::String("text".to_string())),
+        };
+        assert_eq!(text.text().as_deref(), Some("text"));
+        let numeric = OpenaireValue {
+            value: Some(serde_json::json!(26771483)),
+        };
+        assert_eq!(numeric.text().as_deref(), Some("26771483"));
+        assert_eq!(OpenaireValue { value: None }.text(), None);
+    }
+
+    #[test]
+    fn test_creator_display_name_fallbacks() {
+        let with_full: OpenaireCreator = serde_json::from_str(
+            r#"{"@name": "Ada", "@surname": "Lovelace", "$": "Lovelace, Ada"}"#,
+        )
+        .unwrap();
+        assert_eq!(with_full.display_name().as_deref(), Some("Lovelace, Ada"));
+
+        let composed: OpenaireCreator =
+            serde_json::from_str(r#"{"@name": "Ada", "@surname": "Lovelace"}"#).unwrap();
+        assert_eq!(composed.display_name().as_deref(), Some("Ada Lovelace"));
+
+        let none: OpenaireCreator = serde_json::from_str("{}").unwrap();
+        assert_eq!(none.display_name(), None);
+    }
+
+    #[test]
+    fn test_parse_result_joins_multiple_creators() {
+        let raw = r#"{
+            "response": {
+                "results": {
+                    "result": {
+                        "metadata": {
+                            "oaf:entity": {
+                                "oaf:result": {
+                                    "title": [{"$": "Multi Author Paper"}],
+                                    "creator": [
+                                        {"$": "Lovelace, Ada"},
+                                        {"@name": "Alan", "@surname": "Turing"}
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }"#;
+        let source = OpenaireSource::new().unwrap();
+        let response: OpenaireResponse = serde_json::from_str(raw).unwrap();
+        let paper = source
+            .parse_result(&response.response.results.result.as_slice()[0])
+            .unwrap();
+        assert_eq!(paper.title, "Multi Author Paper");
+        assert_eq!(paper.authors, "Lovelace, Ada; Alan Turing");
+        assert_eq!(paper.paper_id, "openaire:Multi%20Author%20Paper");
+    }
+
+    #[test]
+    fn test_live_captured_doi_response_parses() {
+        // Regression guard against the real API shapes; skipped when the
+        // captured fixture is absent so the suite stays reproducible.
+        if let Ok(raw) = std::fs::read_to_string("/tmp/oa-doi.json") {
+            let source = OpenaireSource::new().unwrap();
+            let response: OpenaireResponse =
+                serde_json::from_str(&raw).expect("live OpenAIRE DOI response should deserialize");
+            let item = response
+                .response
+                .results
+                .result
+                .as_slice()
+                .first()
+                .expect("one result");
+            let paper = source.parse_result(item).unwrap();
+            assert_eq!(paper.title, "The Heroes of CRISPR");
+            assert_eq!(paper.doi.as_deref(), Some("10.1016/j.cell.2015.12.041"));
+        }
     }
 }

@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Google Scholar capabilities reduced to search only (no longer claims DOI lookup)
 
 ### Fixed
+- OpenAIRE: every result parsed with an empty title, abstract, authors and DOI — the structs modeled the wrong shapes (title/description/creator/webresource-url are objects or object arrays with the payload under `$`, and numeric `$` values like pmids exist), and serde's `visit_seq` fallback let an untagged `One(T)` variant greedily match a result array as a one-element sequence, silently defaulting the record. Variants reordered (`Many` before `One`), shapes modeled from a live capture, and a guard refuses DOI lookups whose parsed record carries no DOI pid
 - PubMed: search silently returned nothing for every query — the efetch XML parser never matched attributes (quick-xml requires `@Name` renames) and inline markup like `<italic>` split `$text` into duplicate events; year filters now use `mindate`/`maxdate` bounds (the old `reldate` values were invalid day counts) and the author filter is ANDed into the single `term` parameter instead of emitting a duplicate one
 - OSF: search silently returned nothing because the API rejects literal `[`/`]` in query URLs (now percent-encoded); DOI lookup was removed from the cross-source fan-out and returns an honest error (the API has no filterable `doi` field)
 - ClinicalTrials.gov: `lookup_by_doi` fan-out exclusion (a citing study is not the DOI's paper)
