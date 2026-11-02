@@ -5,6 +5,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use super::tools::ToolHandler;
+use crate::utils::evidence::{check_retraction, check_retraction_from};
 use crate::utils::watch::{check_watch, WatchStore};
 use crate::utils::HttpClient;
 
@@ -56,6 +57,44 @@ impl ToolHandler for ListWatchesHandler {
     }
 }
 
+/// Hard cap on retraction lookups per check-watches run so a large feed
+/// cannot hammer OpenAlex.
+const RETRACTION_CHECK_LIMIT: usize = 5;
+
+/// Annotate one serialized paper with `retracted: true` and `retraction_date`
+/// when OpenAlex reports its DOI retracted. Negative results and lookup errors
+/// stay silent so alerts carry only positive findings.
+///
+/// `base_url` overrides the OpenAlex works prefix (test seam); None uses the
+/// real endpoint.
+async fn annotate_if_retracted(
+    paper: &mut Value,
+    doi: &str,
+    client: &HttpClient,
+    base_url: Option<&str>,
+) -> bool {
+    let result = match base_url {
+        Some(base) => check_retraction_from(base, client, doi).await,
+        None => check_retraction(client, doi).await,
+    };
+    match result {
+        Ok(info) if info.is_retracted => {
+            if let Some(obj) = paper.as_object_mut() {
+                obj.insert("retracted".to_string(), Value::Bool(true));
+                if let Some(date) = info.retraction_date {
+                    obj.insert("retraction_date".to_string(), Value::String(date));
+                }
+            }
+            true
+        }
+        Ok(_) => false,
+        Err(e) => {
+            tracing::debug!("retraction check failed for {doi}: {e}");
+            false
+        }
+    }
+}
+
 /// Check one watched topic (or all of them) for new arXiv papers.
 ///
 /// The store is reloaded from disk per call and each check result is persisted,
@@ -101,18 +140,37 @@ impl ToolHandler for CheckAlertsHandler {
             }));
         }
 
+        let mut retraction_checks = 0usize;
+        let mut retraction_skipped = 0usize;
         let mut reports = Vec::with_capacity(targets.len());
         for watch in &mut targets {
             match check_watch(&client, watch, max_results).await {
                 Ok(papers) => {
                     store.update(watch);
-                    let papers: Vec<Value> = papers
+                    let mut papers: Vec<Value> = papers
                         .iter()
                         .map(|p| {
                             serde_json::to_value(p)
                                 .map_err(|e| format!("cannot serialize paper: {e}"))
                         })
                         .collect::<Result<_, _>>()?;
+                    // Best-effort retraction flags on new DOI-bearing hits.
+                    for paper in &mut papers {
+                        let Some(doi) = paper
+                            .get("doi")
+                            .and_then(|v| v.as_str())
+                            .filter(|d| !d.trim().is_empty())
+                            .map(str::to_string)
+                        else {
+                            continue;
+                        };
+                        if retraction_checks >= RETRACTION_CHECK_LIMIT {
+                            retraction_skipped += 1;
+                            continue;
+                        }
+                        retraction_checks += 1;
+                        annotate_if_retracted(paper, &doi, &client, None).await;
+                    }
                     reports.push(json!({
                         "query": watch.query,
                         "last_checked": watch.last_checked,
@@ -127,7 +185,11 @@ impl ToolHandler for CheckAlertsHandler {
                 })),
             }
         }
-        Ok(json!({ "checked": reports.len(), "watches": reports }))
+        let mut response = json!({ "checked": reports.len(), "watches": reports });
+        if retraction_skipped > 0 {
+            response["retraction_checks_skipped"] = json!(retraction_skipped);
+        }
+        Ok(response)
     }
 }
 
@@ -297,6 +359,62 @@ mod tests {
         // The base URL points at a now-dead server port; drop it for other tests.
         std::env::remove_var("RESEARCH_MASTER_ARXIV_API_BASE");
         drop(guard);
+    }
+
+    #[tokio::test]
+    async fn annotate_if_retracted_flags_positive_lookups_only() {
+        let mut server = mockito::Server::new_async().await;
+        let base = format!("{}/works/doi:", server.url());
+        let retracted_mock = server
+            .mock("GET", "/works/doi:10.1000%2Fbad-paper")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"https://openalex.org/W1","title":"Bad Paper",
+                    "is_retracted":true,"retraction_date":"2025-03-01"}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let clean_mock = server
+            .mock("GET", "/works/doi:10.1000%2Fgood-paper")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"https://openalex.org/W2","title":"Good Paper",
+                    "is_retracted":false,"retraction_date":null}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let client = test_client();
+
+        let mut flagged = json!({
+            "paper_id": "2601.00001",
+            "title": "Bad Paper",
+            "doi": "10.1000/bad-paper"
+        });
+        assert!(
+            annotate_if_retracted(&mut flagged, "10.1000/bad-paper", &client, Some(&base)).await
+        );
+        assert_eq!(flagged["retracted"], true);
+        assert_eq!(flagged["retraction_date"], "2025-03-01");
+
+        // A not-retracted result stays silent.
+        let mut clean = json!({
+            "paper_id": "2601.00002",
+            "title": "Good Paper",
+            "doi": "10.1000/good-paper"
+        });
+        assert!(
+            !annotate_if_retracted(&mut clean, "10.1000/good-paper", &client, Some(&base)).await
+        );
+        assert!(clean.get("retracted").is_none());
+        assert!(clean.get("retraction_date").is_none());
+
+        retracted_mock.assert_async().await;
+        clean_mock.assert_async().await;
     }
 
     #[tokio::test]

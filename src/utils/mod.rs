@@ -54,12 +54,18 @@ mod validate;
 
 pub mod library;
 pub use library::{LibraryEntry, PaperLibrary};
+pub mod screening;
+pub use screening::{
+    extract_statistics, Decision, PrismaSummary, RecordOutcome, ScreeningStore, SessionRecord,
+};
 pub mod csl;
 pub mod evidence;
 pub mod grobid;
 pub mod latex;
 pub mod sections;
 pub mod watch;
+pub mod zotero;
+pub use zotero::ZoteroClient;
 
 pub use streaming::{
     collect_papers, filter_by_year, paper_stream, ConcurrentPaperStream, FilterByYearStream,

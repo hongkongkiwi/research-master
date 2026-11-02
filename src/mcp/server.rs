@@ -88,7 +88,11 @@ impl McpServer {
                 "research_discovery",
                 crate::mcp::prompts::ResearchDiscoveryPrompt,
             )
-            .prompt("citation_audit", crate::mcp::prompts::CitationAuditPrompt);
+            .prompt("citation_audit", crate::mcp::prompts::CitationAuditPrompt)
+            .prompt(
+                "systematic_review_screening",
+                crate::mcp::prompts::SystematicReviewScreeningPrompt,
+            );
 
         builder.build()
     }

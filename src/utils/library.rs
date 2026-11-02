@@ -28,6 +28,16 @@ pub struct LibraryEntry {
     /// Free-form notes; searched alongside title and abstract
     #[serde(default)]
     pub notes: String,
+    /// Retraction check outcome for the paper's DOI: `"retracted"`,
+    /// `"not_retracted"`, or `"unknown"`; None when never checked
+    #[serde(default)]
+    pub retraction_status: Option<String>,
+    /// When the paper was retracted, as reported by OpenAlex
+    #[serde(default)]
+    pub retraction_date: Option<String>,
+    /// RFC3339 UTC time of the last retraction check
+    #[serde(default)]
+    pub retraction_checked_at: Option<String>,
     pub paper: Paper,
 }
 
@@ -51,8 +61,8 @@ pub struct AskAnswer {
 
 /// Saved-papers store backed by one JSONL file with a mutex-protected in-memory cache.
 ///
-/// Lines are `{added_at, collection, tags, notes, paper}`; corrupt lines are skipped
-/// on load. Mutations rewrite the file atomically (temp file + rename).
+/// Lines are `{added_at, collection, tags, notes, retraction fields, paper}`; corrupt
+/// lines are skipped on load. Mutations rewrite the file atomically (temp file + rename).
 #[derive(Debug, Clone)]
 pub struct PaperLibrary {
     path: PathBuf,
@@ -130,6 +140,9 @@ impl PaperLibrary {
                         collection,
                         tags,
                         notes: String::new(),
+                        retraction_status: None,
+                        retraction_date: None,
+                        retraction_checked_at: None,
                         paper,
                     });
                     (true, AddedOrUpdated::Added)
@@ -158,6 +171,38 @@ impl PaperLibrary {
                 .filter(|e| in_scope(e, collection) && matches_id(e, id, &id_lower))
             {
                 entry.notes = notes.clone();
+                changed = true;
+            }
+            (changed, changed)
+        })
+    }
+
+    /// Set retraction status on every matching entry in scope. Returns false when none match.
+    pub fn set_retraction(
+        &self,
+        id: &str,
+        collection: Option<&str>,
+        status: &str,
+        retraction_date: Option<&str>,
+        checked_at: &str,
+    ) -> Result<bool, String> {
+        let id = id.trim();
+        if id.is_empty() {
+            return Ok(false);
+        }
+        let id_lower = id.to_lowercase();
+        let status = status.to_string();
+        let retraction_date = retraction_date.map(str::to_string);
+        let checked_at = checked_at.to_string();
+        self.mutate(|entries| {
+            let mut changed = false;
+            for entry in entries
+                .iter_mut()
+                .filter(|e| in_scope(e, collection) && matches_id(e, id, &id_lower))
+            {
+                entry.retraction_status = Some(status.clone());
+                entry.retraction_date = retraction_date.clone();
+                entry.retraction_checked_at = Some(checked_at.clone());
                 changed = true;
             }
             (changed, changed)
@@ -199,11 +244,13 @@ impl PaperLibrary {
     /// Keyword search over title, abstract, notes, and tags.
     ///
     /// Terms match exactly or fuzzily (Jaro-Winkler); entries are ranked TF-IDF-ish
-    /// and returned with their scores, best first.
+    /// and returned with their scores, best first. With `retracted_only`, only
+    /// entries whose retraction status is `"retracted"` are considered.
     pub fn search(
         &self,
         query: &str,
         collection: Option<&str>,
+        retracted_only: bool,
         limit: usize,
     ) -> Vec<(LibraryEntry, f64)> {
         let terms = tokenize(query);
@@ -214,6 +261,7 @@ impl PaperLibrary {
             .snapshot()
             .into_iter()
             .filter(|e| in_scope(e, collection))
+            .filter(|e| !retracted_only || e.retraction_status.as_deref() == Some("retracted"))
             .collect();
         let idf = idf_map(&corpus, &terms);
         let mut scored: Vec<(LibraryEntry, f64)> = corpus
@@ -624,19 +672,19 @@ mod tests {
             )
             .unwrap();
 
-        let results = library.search("transformer", None, 10);
+        let results = library.search("transformer", None, false, 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0.paper.paper_id, "attn");
         assert!(results[0].1 > 0.0);
 
         // Fuzzy: plural form still finds the singular-only document.
-        let fuzzy = library.search("transformers", None, 10);
+        let fuzzy = library.search("transformers", None, false, 10);
         assert_eq!(fuzzy.len(), 1);
         assert_eq!(fuzzy[0].0.paper.paper_id, "attn");
 
-        let limited = library.search("the", None, 1);
+        let limited = library.search("the", None, false, 1);
         assert!(limited.len() <= 1);
-        assert!(library.search("zzzznotfound", None, 10).is_empty());
+        assert!(library.search("zzzznotfound", None, false, 10).is_empty());
     }
 
     #[test]
@@ -653,9 +701,9 @@ mod tests {
             .set_notes("a1", None, "relevant to scaling laws")
             .unwrap();
 
-        let by_note = library.search("scaling", None, 10);
+        let by_note = library.search("scaling", None, false, 10);
         assert_eq!(by_note.len(), 1);
-        let by_tag = library.search("survey", None, 10);
+        let by_tag = library.search("survey", None, false, 10);
         assert_eq!(by_tag.len(), 1);
     }
 
@@ -681,6 +729,77 @@ mod tests {
             .unwrap();
         let library = PaperLibrary::from_path(path);
         assert_eq!(library.list(None).len(), 2);
+    }
+
+    #[test]
+    fn retraction_fields_persist_and_default_on_old_json() {
+        let path = temp_path("retraction");
+        let library = PaperLibrary::from_path(path.clone());
+        library
+            .add_paper(paper("a1", "Alpha", Some("10.1000/x")), None, Vec::new())
+            .unwrap();
+        library
+            .set_retraction(
+                "a1",
+                None,
+                "retracted",
+                Some("2024-06-01"),
+                "2026-11-02T00:00:00+00:00",
+            )
+            .unwrap();
+        let entry = &library.list(None)[0];
+        assert_eq!(entry.retraction_status.as_deref(), Some("retracted"));
+        assert_eq!(entry.retraction_date.as_deref(), Some("2024-06-01"));
+
+        // State survives a reload from disk.
+        let reloaded = PaperLibrary::from_path(path);
+        let entry = &reloaded.list(None)[0];
+        assert_eq!(entry.retraction_status.as_deref(), Some("retracted"));
+        assert!(entry.retraction_checked_at.is_some());
+
+        // An old JSONL line without retraction fields loads with None defaults.
+        let stored_paper = serde_json::to_string(&paper("b2", "Beta", None)).unwrap();
+        let old_line = format!(
+            r#"{{"added_at":1700000000,"collection":null,"tags":[],"notes":"","paper":{stored_paper}}}"#
+        );
+        let entry: LibraryEntry = serde_json::from_str(&old_line).unwrap();
+        assert_eq!(entry.retraction_status, None);
+        assert_eq!(entry.retraction_date, None);
+        assert_eq!(entry.retraction_checked_at, None);
+    }
+
+    #[test]
+    fn search_can_restrict_to_retracted_entries() {
+        let library = PaperLibrary::from_path(temp_path("retracted-only"));
+        library
+            .add_paper(
+                paper("bad", "Retracted Study", Some("10.1000/bad")),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        library
+            .add_paper(
+                paper("ok", "Solid Replication Study", None),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        library
+            .set_retraction(
+                "10.1000/bad",
+                None,
+                "retracted",
+                None,
+                "2026-11-02T00:00:00+00:00",
+            )
+            .unwrap();
+
+        let all = library.search("study", None, false, 10);
+        assert_eq!(all.len(), 2);
+        let only_retracted = library.search("study", None, true, 10);
+        assert_eq!(only_retracted.len(), 1);
+        assert_eq!(only_retracted[0].0.paper.paper_id, "bad");
     }
 
     #[test]

@@ -114,6 +114,31 @@ impl ToolRegistry {
                         "type": "string",
                         "enum": ["any", "open", "ignore"],
                         "description": "Work-license filter. 'any' (default) and 'ignore' keep all results. 'open' keeps only works with recognized open licenses and excludes unknowns. This does not override any provider API terms."
+                    },
+                    "include_types": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Keep only papers whose reported type or categories contain one of these tokens (case-insensitive substring; e.g. 'review', 'meta-analysis', 'randomized controlled trial', 'preprint'). Papers whose source reports no type/categories still pass unless strict_types is true."
+                    },
+                    "exclude_types": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Drop papers whose reported type or categories contain one of these tokens. Exclusions win over include_types."
+                    },
+                    "strict_types": {
+                        "type": "boolean",
+                        "description": "Together with include_types, also drop papers whose source reports no type/categories (only sources such as OpenAlex report types). Default false (lenient)."
+                    },
+                    "filters": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "Generic source-specific filters passed through as key/value pairs. Sources ignore keys they do not support."
                     }
                 },
                 "required": ["query"]
@@ -771,13 +796,16 @@ impl ToolRegistry {
         // Local library: persistent saved papers with collections, tags,
         // notes and retrieval scoring.
         self.register_library_tools();
+        // Zotero cloud-library sync and the systematic-review screening flow.
+        self.register_zotero_tools(sources);
+        self.register_screening_tools(sources);
     }
 
     /// Register the saved-papers library tools.
     fn register_library_tools(&mut self) {
         self.register(Tool {
             name: "library_add".to_string(),
-            description: "Save a paper to the local library (JSONL at the user config dir). Re-saving the same DOI or paper_id updates its collection and tags; notes are preserved.".to_string(),
+            description: "Save a paper to the local library (JSONL at the user config dir). Re-saving the same DOI or paper_id updates its collection and tags; notes are preserved. Looks up retraction status via OpenAlex when the paper has a DOI.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -837,14 +865,15 @@ impl ToolRegistry {
         self.register(Tool {
             name: "library_search".to_string(),
             description:
-                "Search saved papers by keywords (TF-IDF style scoring with fuzzy term matching)."
+                "Search saved papers by keywords (TF-IDF style scoring with fuzzy term matching). Set retracted_only to return only papers OpenAlex reports as retracted."
                     .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Keyword query" },
                     "collection": { "type": "string", "description": "Restrict to a collection" },
-                    "limit": { "type": "integer", "description": "Maximum matches (default 10)" }
+                    "limit": { "type": "integer", "description": "Maximum matches (default 10)" },
+                    "retracted_only": { "type": "boolean", "description": "Only entries whose retraction check came back positive" }
                 },
                 "required": ["query"]
             }),
@@ -863,6 +892,111 @@ impl ToolRegistry {
                 "required": ["question"]
             }),
             handler: Arc::new(super::handlers_library::LibraryAskHandler),
+        });
+    }
+
+    /// Register the Zotero sync tools (remote library, API key required).
+    fn register_zotero_tools(&mut self, sources: &Arc<Vec<Arc<dyn crate::sources::Source>>>) {
+        self.register(Tool {
+            name: "zotero_save".to_string(),
+            description: "Save a paper to your Zotero library. Resolves the paper by id or DOI first. Requires ZOTERO_API_KEY and ZOTERO_USER_ID (or ZOTERO_GROUP_ID).".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "paper_id": { "type": "string", "description": "Paper id, arXiv id, or DOI to resolve and save" },
+                    "source": { "type": "string", "description": "Override source auto-detection" }
+                },
+                "required": ["paper_id"]
+            }),
+            handler: Arc::new(super::handlers_zotero::ZoteroSaveHandler {
+                sources: sources.clone(),
+            }),
+        });
+        self.register(Tool {
+            name: "zotero_search".to_string(),
+            description: "Search your Zotero library by keyword (matches title and creator fields). Requires ZOTERO_API_KEY and ZOTERO_USER_ID (or ZOTERO_GROUP_ID).".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Keyword query" },
+                    "limit": { "type": "integer", "description": "Maximum items (default 10, cap 50)" }
+                },
+                "required": ["query"]
+            }),
+            handler: Arc::new(super::handlers_zotero::ZoteroSearchHandler),
+        });
+    }
+
+    /// Register the systematic-review screening tools (PRISMA-style counting).
+    fn register_screening_tools(&mut self, sources: &Arc<Vec<Arc<dyn crate::sources::Source>>>) {
+        self.register(Tool {
+            name: "screening_start".to_string(),
+            description: "Start a systematic-review screening session with PRISMA counting, from a source query or an explicit candidate list.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "inclusion_criteria": { "type": "string", "description": "Criteria a paper must meet to be included" },
+                    "exclusion_criteria": { "type": "string", "description": "Criteria that disqualify a paper" },
+                    "name": { "type": "string", "description": "Session name (default 'screening')" },
+                    "query": { "type": "string", "description": "Search string run across all sources to build the candidate list" },
+                    "max_results": { "type": "integer", "description": "Per-source result cap for the query (default 50, max 200)" },
+                    "papers": { "type": "array", "items": { "type": "object" }, "description": "Candidate list instead of a query; each object needs at least paper_id and title" }
+                },
+                "required": ["inclusion_criteria", "exclusion_criteria"]
+            }),
+            handler: Arc::new(super::handlers_screening::ScreeningStartHandler {
+                sources: sources.clone(),
+            }),
+        });
+        self.register(Tool {
+            name: "screening_next".to_string(),
+            description: "Get the next undecided candidates in a screening session, with statistics extracted from their abstracts.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "Session id from screening_start" },
+                    "limit": { "type": "integer", "description": "Max candidates to return (default 10, max 50)" }
+                },
+                "required": ["session_id"]
+            }),
+            handler: Arc::new(super::handlers_screening::ScreeningNextHandler),
+        });
+        self.register(Tool {
+            name: "screening_decide".to_string(),
+            description: "Record include/exclude/uncertain decisions for screened candidates.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "Session id from screening_start" },
+                    "decisions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "paper_id": { "type": "string" },
+                                "decision": { "type": "string", "enum": ["include", "exclude", "uncertain"] },
+                                "reason": { "type": "string", "description": "Short reason; for excludes this becomes the PRISMA exclusion category" }
+                            },
+                            "required": ["paper_id", "decision"]
+                        },
+                        "description": "Decisions for the current batch"
+                    }
+                },
+                "required": ["session_id", "decisions"]
+            }),
+            handler: Arc::new(super::handlers_screening::ScreeningDecideHandler),
+        });
+        self.register(Tool {
+            name: "screening_summary".to_string(),
+            description: "PRISMA flow summary for a screening session: identified, duplicates removed, screened, excluded by reason, included, uncertain, remaining.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "Session id from screening_start" }
+                },
+                "required": ["session_id"]
+            }),
+            handler: Arc::new(super::handlers_screening::ScreeningSummaryHandler),
         });
     }
 
@@ -963,7 +1097,7 @@ mod tests {
         let names: std::collections::HashSet<&str> =
             tools.iter().map(|tool| tool.name.as_str()).collect();
 
-        assert_eq!(tools.len(), 36);
+        assert_eq!(tools.len(), 42);
         for expected in [
             "search_papers",
             "search_by_author",
@@ -985,6 +1119,12 @@ mod tests {
             "web_search",
             "web_extract",
             "github_search",
+            "zotero_save",
+            "zotero_search",
+            "screening_start",
+            "screening_next",
+            "screening_decide",
+            "screening_summary",
         ] {
             assert!(names.contains(expected), "missing tool {expected}");
         }

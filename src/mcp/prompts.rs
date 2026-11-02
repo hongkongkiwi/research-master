@@ -198,6 +198,63 @@ impl PromptHandler for CitationAuditPrompt {
     }
 }
 
+/// Batch title/abstract screening against review criteria with PRISMA counting.
+#[derive(Debug, Default)]
+pub struct SystematicReviewScreeningPrompt;
+
+#[async_trait::async_trait]
+impl PromptHandler for SystematicReviewScreeningPrompt {
+    async fn handle(
+        &self,
+        args: HashMap<String, String>,
+        _extra: RequestHandlerExtra,
+    ) -> Result<GetPromptResult> {
+        let topic = arg(&args, "topic", "");
+        if topic.trim().is_empty() {
+            return Err(Error::invalid_params("Missing 'topic' argument"));
+        }
+        let inclusion = arg(&args, "inclusion_criteria", "");
+        if inclusion.trim().is_empty() {
+            return Err(Error::invalid_params(
+                "Missing 'inclusion_criteria' argument",
+            ));
+        }
+        let exclusion = arg(&args, "exclusion_criteria", "");
+        if exclusion.trim().is_empty() {
+            return Err(Error::invalid_params(
+                "Missing 'exclusion_criteria' argument",
+            ));
+        }
+        prompt(
+            "Screen papers against review criteria in batches with PRISMA flow counts",
+            &args,
+            "topic",
+            &topic,
+            |topic| {
+                format!(
+                    "Screen papers on '{topic}' for a systematic review.\n\
+                     Inclusion criteria: {inclusion}\n\
+                     Exclusion criteria: {exclusion}\n\
+                     1. Call screening_start with these criteria. Pass query '{topic}' to\n\
+                        search the sources, or papers if a candidate list already exists;\n\
+                        note the session_id.\n\
+                     2. Loop: screening_next with the session_id returns a batch. Judge each\n\
+                        candidate against both criteria using title, abstract, type, venue\n\
+                        and the extracted_statistics field.\n\
+                     3. Record each batch with screening_decide: 'include' when the paper\n\
+                        meets the inclusion criteria; otherwise 'exclude' with a short reason\n\
+                        naming the criterion it fails (that reason becomes the PRISMA\n\
+                        exclusion category). Use 'uncertain' only when the abstract is\n\
+                        genuinely ambiguous.\n\
+                     4. When screening_next reports nothing remaining, call screening_summary\n\
+                        and present the PRISMA flow: identified, duplicates removed, screened,\n\
+                        excluded by reason, included, uncertain."
+                )
+            },
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,6 +297,42 @@ mod tests {
         };
         assert!(text.contains("get_citation_tallies"));
         assert!(text.contains("retraction"));
+    }
+
+    #[tokio::test]
+    async fn systematic_review_screening_requires_topic() {
+        let result = SystematicReviewScreeningPrompt
+            .handle(HashMap::new(), test_extra())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn systematic_review_screening_mentions_tool_flow() {
+        let mut args = HashMap::new();
+        args.insert("topic".to_string(), "digital therapeutics".to_string());
+        args.insert(
+            "inclusion_criteria".to_string(),
+            "RCTs in adults".to_string(),
+        );
+        args.insert(
+            "exclusion_criteria".to_string(),
+            "animal studies".to_string(),
+        );
+        let result = SystematicReviewScreeningPrompt
+            .handle(args, test_extra())
+            .await
+            .unwrap();
+        let text = match &result.messages[0].content {
+            Content::Text { text } => text.clone(),
+            _ => panic!("expected text content"),
+        };
+        assert!(text.contains("digital therapeutics"));
+        assert!(text.contains("RCTs in adults"));
+        assert!(text.contains("screening_start"));
+        assert!(text.contains("screening_next"));
+        assert!(text.contains("screening_decide"));
+        assert!(text.contains("screening_summary"));
     }
 
     fn test_extra() -> RequestHandlerExtra {

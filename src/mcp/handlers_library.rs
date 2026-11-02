@@ -4,7 +4,9 @@ use serde_json::{json, Value};
 
 use super::tools::ToolHandler;
 use crate::models::{Paper, SourceType};
+use crate::utils::evidence::{check_retraction, check_retraction_from, RetractionInfo};
 use crate::utils::library::{AddedOrUpdated, PaperLibrary};
+use crate::utils::HttpClient;
 
 fn collection_of(args: &Value) -> Option<String> {
     args.get("collection")
@@ -95,6 +97,38 @@ fn paper_from_args(args: &Value) -> Result<Paper, String> {
     Ok(paper)
 }
 
+/// OpenAlex works prefix for retraction lookups; `RESEARCH_MASTER_OPENALEX_WORKS_URL`
+/// overrides it (test seam, mirroring `RESEARCH_MASTER_ARXIV_API_BASE`).
+fn openalex_works_url() -> Option<String> {
+    std::env::var("RESEARCH_MASTER_OPENALEX_WORKS_URL")
+        .ok()
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty())
+}
+
+/// Best-effort OpenAlex retraction lookup for a DOI; `None` on any failure so
+/// the caller records "unknown" instead of failing.
+async fn lookup_retraction(doi: &str) -> Option<RetractionInfo> {
+    let client = match HttpClient::new() {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::debug!("retraction lookup unavailable: {e}");
+            return None;
+        }
+    };
+    let result = match openalex_works_url() {
+        Some(base) => check_retraction_from(&base, &client, doi).await,
+        None => check_retraction(&client, doi).await,
+    };
+    match result {
+        Ok(info) => Some(info),
+        Err(e) => {
+            tracing::debug!("retraction lookup failed for {doi}: {e}");
+            None
+        }
+    }
+}
+
 /// Add a paper to the saved library, or refresh it when already saved.
 #[derive(Debug)]
 pub struct LibraryAddHandler;
@@ -112,6 +146,47 @@ impl ToolHandler for LibraryAddHandler {
             AddedOrUpdated::Added => "added",
             AddedOrUpdated::Updated => "updated",
         };
+
+        // Best-effort retraction check on the DOI; a failed lookup records
+        // "unknown" and never fails the add.
+        let mut retraction_status: Option<&'static str> = None;
+        let mut retraction_date: Option<String> = None;
+        let mut checked_at: Option<String> = None;
+        if let Some(doi) = paper
+            .doi
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+        {
+            let (found_status, date) = match lookup_retraction(doi).await {
+                Some(info) => (
+                    if info.is_retracted {
+                        "retracted"
+                    } else {
+                        "not_retracted"
+                    },
+                    info.retraction_date,
+                ),
+                None => ("unknown", None),
+            };
+            let id = if paper.paper_id.trim().is_empty() {
+                doi
+            } else {
+                paper.paper_id.as_str()
+            };
+            let at = chrono::Utc::now().to_rfc3339();
+            let _ = library.set_retraction(
+                id,
+                collection.as_deref(),
+                found_status,
+                date.as_deref(),
+                &at,
+            );
+            retraction_status = Some(found_status);
+            retraction_date = date;
+            checked_at = Some(at);
+        }
+
         Ok(json!({
             "status": status,
             "paper_id": paper.paper_id,
@@ -119,6 +194,9 @@ impl ToolHandler for LibraryAddHandler {
             "doi": paper.doi,
             "collection": collection,
             "tags": tags,
+            "retraction_status": retraction_status,
+            "retraction_date": retraction_date,
+            "retraction_checked_at": checked_at,
         }))
     }
 }
@@ -184,11 +262,15 @@ impl ToolHandler for LibrarySearchHandler {
     async fn execute(&self, args: Value) -> Result<Value, String> {
         let query = require_str(&args, "query")?.to_string();
         let collection = collection_of(&args);
+        let retracted_only = args
+            .get("retracted_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let limit = limit_of(&args, 10);
 
         let library = PaperLibrary::new();
         let results: Result<Vec<Value>, String> = library
-            .search(&query, collection.as_deref(), limit)
+            .search(&query, collection.as_deref(), retracted_only, limit)
             .into_iter()
             .map(|(entry, score)| {
                 serde_json::to_value(&entry.paper)
@@ -199,6 +281,9 @@ impl ToolHandler for LibrarySearchHandler {
                             "collection": entry.collection,
                             "tags": entry.tags,
                             "notes": entry.notes,
+                            "retraction_status": entry.retraction_status,
+                            "retraction_date": entry.retraction_date,
+                            "retraction_checked_at": entry.retraction_checked_at,
                         })
                     })
                     .map_err(|e| format!("cannot serialize entry: {e}"))
@@ -261,6 +346,7 @@ impl ToolHandler for LibraryAskHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::LibraryEntry;
 
     /// Serializes env access: the library path override is process-wide.
     /// A tokio Mutex because the guard must span await points in async tests.
@@ -300,9 +386,67 @@ mod tests {
         })
     }
 
+    /// Ambient proxy vars would route mockito-bound requests through a proxy;
+    /// clear them while the env guard is held, restore with the returned pair
+    /// list when done (same trick as the evidence module's test client).
+    fn clear_proxy_env() -> Vec<(&'static str, Option<String>)> {
+        const VARS: [&str; 6] = [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ];
+        let saved: Vec<(&'static str, Option<String>)> =
+            VARS.iter().map(|v| (*v, std::env::var(v).ok())).collect();
+        for var in VARS {
+            std::env::remove_var(var);
+        }
+        saved
+    }
+
+    fn restore_proxy_env(saved: Vec<(&'static str, Option<String>)>) {
+        for (var, value) in saved {
+            match value {
+                Some(v) => std::env::set_var(var, v),
+                None => std::env::remove_var(var),
+            }
+        }
+    }
+
+    #[test]
+    fn old_entry_json_without_retraction_fields_loads_with_defaults() {
+        let stored_paper = serde_json::to_string(&sample_paper()).unwrap();
+        let old_line = format!(
+            r#"{{"added_at":1700000000,"collection":"survey","tags":["attention"],"notes":"n","paper":{stored_paper}}}"#
+        );
+        let entry: LibraryEntry = serde_json::from_str(&old_line).unwrap();
+        assert_eq!(entry.retraction_status, None);
+        assert_eq!(entry.retraction_date, None);
+        assert_eq!(entry.retraction_checked_at, None);
+    }
+
     #[tokio::test]
     async fn add_list_remove_roundtrip_via_handlers() {
         let _guard = scoped_library_path("roundtrip").await;
+        let mut server = mockito::Server::new_async().await;
+        let retraction_mock = server
+            .mock("GET", "/works/doi:10.1000%2Fsparse")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"https://openalex.org/W1","title":"Sparse Attention Survey",
+                    "is_retracted":true,"retraction_date":"2024-06-01"}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let saved_proxies = clear_proxy_env();
+        std::env::set_var(
+            "RESEARCH_MASTER_OPENALEX_WORKS_URL",
+            format!("{}/works/doi:", server.url()),
+        );
 
         let added = LibraryAddHandler
             .execute(json!({
@@ -315,6 +459,9 @@ mod tests {
         assert_eq!(added["status"], "added");
         assert_eq!(added["paper_id"], "2401.00001");
         assert_eq!(added["collection"], "survey");
+        assert_eq!(added["retraction_status"], "retracted");
+        assert_eq!(added["retraction_date"], "2024-06-01");
+        assert!(added["retraction_checked_at"].as_str().is_some());
 
         let listed = LibraryListHandler
             .execute(json!({ "collection": "survey" }))
@@ -324,6 +471,8 @@ mod tests {
         assert_eq!(listed["returned"], 1);
         assert_eq!(listed["papers"][0]["paper"]["paper_id"], "2401.00001");
         assert_eq!(listed["papers"][0]["tags"][0], "attention");
+        assert_eq!(listed["papers"][0]["retraction_status"], "retracted");
+        assert_eq!(listed["papers"][0]["retraction_date"], "2024-06-01");
 
         let removed = LibraryRemoveHandler
             .execute(json!({ "id": "10.1000/sparse" }))
@@ -333,11 +482,30 @@ mod tests {
 
         let listed = LibraryListHandler.execute(json!({})).await.unwrap();
         assert_eq!(listed["total"], 0);
+
+        retraction_mock.assert_async().await;
+        restore_proxy_env(saved_proxies);
+        std::env::remove_var("RESEARCH_MASTER_OPENALEX_WORKS_URL");
     }
 
     #[tokio::test]
     async fn add_minimal_fields_constructs_paper() {
         let _guard = scoped_library_path("minimal").await;
+        // A DOI OpenAlex does not index leaves the entry "unknown" without
+        // failing the add (404 is a permanent error, so no retries).
+        let mut server = mockito::Server::new_async().await;
+        let missing_mock = server
+            .mock("GET", "/works/doi:10.9999%2Fmin")
+            .with_status(404)
+            .with_body("not found")
+            .expect(1)
+            .create_async()
+            .await;
+        let saved_proxies = clear_proxy_env();
+        std::env::set_var(
+            "RESEARCH_MASTER_OPENALEX_WORKS_URL",
+            format!("{}/works/doi:", server.url()),
+        );
 
         let added = LibraryAddHandler
             .execute(json!({
@@ -350,6 +518,13 @@ mod tests {
             .unwrap();
         assert_eq!(added["status"], "added");
         assert_eq!(added["paper_id"], "10.9999/min");
+        assert_eq!(added["retraction_status"], "unknown");
+        assert_eq!(added["retraction_date"], Value::Null);
+        assert!(added["retraction_checked_at"].as_str().is_some());
+
+        missing_mock.assert_async().await;
+        restore_proxy_env(saved_proxies);
+        std::env::remove_var("RESEARCH_MASTER_OPENALEX_WORKS_URL");
     }
 
     #[tokio::test]
