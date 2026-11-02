@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Selectable MCP transports: `research-master mcp --transport stdio|sse|http` (stdio default; `sse` serves the legacy HTTP+SSE protocol with `GET /sse` and `POST /messages?sessionId=`; `http` is streamable HTTP; `--http`/`--stdio` keep working)
+- `--no-web` global flag disables the local history panel
 - DataCite, INSPIRE-HEP and NASA ADS sources
 - License filter: `--license open|any|ignore` on CLI search and a `license` parameter on MCP `search_papers`; `open` keeps only works with a recognized open reuse license
 - Local history panel: `research-master panel` serves recent searches and downloads as a web UI on loopback (default port 3001)

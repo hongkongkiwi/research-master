@@ -114,6 +114,10 @@ struct Cli {
     #[arg(long, global = true, default_value_t = false)]
     no_cache: bool,
 
+    /// Disable the local web interface (history panel)
+    #[arg(long, global = true, default_value_t = false)]
+    no_web: bool,
+
     /// Log to a file instead of stderr
     #[arg(long, global = true, value_name = "FILE")]
     log_file: Option<PathBuf>,
@@ -519,6 +523,10 @@ enum Commands {
         #[arg(long)]
         http: bool,
 
+        /// Transport protocol (overrides --stdio and --http)
+        #[arg(long, value_enum, default_value_t = McpTransport::Auto)]
+        transport: McpTransport,
+
         /// Port for SSE mode (if not using stdio)
         #[arg(long, short, default_value_t = 3000)]
         port: u16,
@@ -746,6 +754,19 @@ impl LicenseFilter {
             LicenseFilter::Ignore => research_master::models::LicensePolicy::Ignore,
         }
     }
+}
+
+/// MCP transport protocol
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum McpTransport {
+    /// stdio unless --http is passed
+    Auto,
+    /// JSON-RPC over stdin/stdout (Claude Desktop style)
+    Stdio,
+    /// Legacy HTTP + SSE: GET /sse with POST /messages (spec 2024-11-05)
+    Sse,
+    /// Streamable HTTP: POST/GET/DELETE at the server root (current spec)
+    Http,
 }
 
 /// Citation style for formatting
@@ -1503,31 +1524,60 @@ async fn main() -> Result<()> {
         Some(Commands::Mcp {
             stdio,
             http,
+            transport,
             port,
             host,
         }) => {
             let server = McpServer::new(Arc::new(registry))?;
 
-            // Use HTTP mode if --http flag is provided, otherwise use --stdio flag
+            // --transport wins; otherwise keep the historical --http/--stdio flags
             let use_http = http || !stdio;
+            let transport = match transport {
+                McpTransport::Auto if use_http => McpTransport::Http,
+                McpTransport::Auto => McpTransport::Stdio,
+                explicit => explicit,
+            };
 
-            if use_http {
-                let addr = format!("{}:{}", host, port);
-                tracing::info!("Running MCP server in HTTP/SSE mode on {}", addr);
-                let (bound_addr, handle) = server.run_http(&addr).await?;
-                tracing::info!("MCP server listening on {}", bound_addr);
+            let addr = format!("{}:{}", host, port);
+            match transport {
+                McpTransport::Stdio => {
+                    tracing::info!("Running MCP server in stdio mode");
+                    server.run().await?;
+                }
+                McpTransport::Sse => {
+                    let (bound_addr, handle) = server.run_sse(&addr).await?;
+                    tracing::info!(
+                        "MCP server listening on {} (SSE endpoint: http://{}/sse)",
+                        bound_addr,
+                        bound_addr
+                    );
 
-                // Wait for the server to finish
-                handle
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Server task failed: {}", e))?;
-            } else {
-                tracing::info!("Running MCP server in stdio mode");
-                server.run().await?;
+                    // Wait for the server to finish
+                    handle
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Server task failed: {}", e))?;
+                }
+                McpTransport::Http => {
+                    tracing::info!("Running MCP server in HTTP/SSE mode on {}", addr);
+                    let (bound_addr, handle) = server.run_http(&addr).await?;
+                    tracing::info!("MCP server listening on {}", bound_addr);
+
+                    // Wait for the server to finish
+                    handle
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Server task failed: {}", e))?;
+                }
+                McpTransport::Auto => unreachable!("resolved above"),
             }
         }
 
         Some(Commands::Panel { host, port }) => {
+            if cli.no_web {
+                if !cli.quiet {
+                    eprintln!("Web panel disabled (--no-web).");
+                }
+                return Ok(());
+            }
             panel::run(&host, port).await?;
         }
 

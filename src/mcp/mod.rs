@@ -56,6 +56,7 @@ pub mod handlers_watch;
 pub mod http_auth;
 pub mod prompts;
 pub mod server;
+pub mod sse;
 mod tools;
 pub mod unified_tools;
 

@@ -23,6 +23,9 @@ use tokio::task::JoinHandle;
 #[derive(Debug, Clone)]
 pub struct McpServer {
     server: Arc<Mutex<Server>>,
+    /// Kept so network transports can build a fresh `Server` per client
+    /// session with clean initialization state.
+    tools: ToolRegistry,
 }
 
 impl McpServer {
@@ -35,9 +38,10 @@ impl McpServer {
         }
 
         let tools = ToolRegistry::from_sources(&sources);
-        let server = Self::build_server_impl(tools)?;
+        let server = Self::build_server_impl(tools.clone())?;
         Ok(Self {
             server: Arc::new(Mutex::new(server)),
+            tools,
         })
     }
 
@@ -47,7 +51,7 @@ impl McpServer {
     }
 
     /// Build the MCP server with tool handlers (internal implementation)
-    fn build_server_impl(tools: ToolRegistry) -> Result<Server, pmcp::Error> {
+    pub(crate) fn build_server_impl(tools: ToolRegistry) -> Result<Server, pmcp::Error> {
         let mut builder = Server::builder()
             .name("research-master")
             .version(env!("CARGO_PKG_VERSION"))
@@ -141,6 +145,16 @@ impl McpServer {
 
         // Start the server
         http_server.start().await
+    }
+
+    /// Run the server with the legacy HTTP + SSE transport (spec 2024-11-05)
+    ///
+    /// Serves `GET /sse` (Server-Sent Events) plus `POST /messages?sessionId=`.
+    /// Bearer auth follows the streamable HTTP transport: set
+    /// `RESEARCH_MASTER_HTTP_TOKEN` to require `Authorization: Bearer <token>`.
+    pub async fn run_sse(&self, addr: &str) -> Result<(SocketAddr, JoinHandle<()>), pmcp::Error> {
+        tracing::info!("Starting MCP server in legacy SSE mode on {}", addr);
+        crate::mcp::sse::run(self.tools.clone(), addr).await
     }
 }
 

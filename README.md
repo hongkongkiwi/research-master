@@ -106,7 +106,11 @@ research-master doctor
 # Start MCP server
 research-master mcp --stdio
 
-# Browse recent searches and downloads (loopback only)
+# Start MCP server over HTTP: --transport sse (legacy /sse + /messages)
+# or --transport http (streamable HTTP)
+research-master mcp --transport sse --port 3000
+
+# Browse recent searches and downloads (loopback only; --no-web disables)
 research-master panel --host 127.0.0.1 --port 3001
 
 # Restrict results to known open reuse licenses
