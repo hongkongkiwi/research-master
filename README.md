@@ -93,10 +93,10 @@ research-master search "transformer architecture" --year 2020-
 research-master author "Geoffrey Hinton"
 
 # Download a paper
-research-master download 2301.12345 --source arxiv --output ./papers
+research-master download 2301.12345 --source arxiv --output-path ./papers
 
 # Look up by DOI
-research-master lookup 10.48550/arXiv.2301.12345
+research-master lookup-by-doi 10.48550/arXiv.2301.12345
 
 # Format a citation
 research-master cite 10.48550/arXiv.1706.03762 --style bibtex

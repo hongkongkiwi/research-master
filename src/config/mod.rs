@@ -127,6 +127,10 @@ pub struct Config {
     /// Cache settings
     #[serde(default)]
     pub cache: CacheConfig,
+
+    /// Proxy settings consumed by the HTTP client configuration.
+    #[serde(default)]
+    pub proxy: file_config::ProxyConfig,
 }
 
 /// Source configuration
@@ -256,13 +260,14 @@ impl ApiKeys {
 
 impl Config {
     fn from_env() -> Self {
-        Self {
+        apply_env_overrides(Self {
             api_keys: ApiKeys::from_env(),
             downloads: DownloadConfig::default(),
             rate_limits: RateLimitConfig::default(),
             sources: SourceConfig::from_env(),
             cache: CacheConfig::default(),
-        }
+            proxy: file_config::ProxyConfig::default(),
+        })
     }
 
     fn without_env() -> Self {
@@ -272,6 +277,7 @@ impl Config {
             rate_limits: RateLimitConfig::default(),
             sources: SourceConfig::without_env(),
             cache: CacheConfig::default(),
+            proxy: file_config::ProxyConfig::default(),
         }
     }
 }
@@ -358,7 +364,7 @@ pub fn load_config(path: &Path) -> Result<Config, config::ConfigError> {
         .add_source(config::Environment::with_prefix("RESEARCH_MASTER"))
         .build()?;
 
-    settings.try_deserialize()
+    settings.try_deserialize().map(apply_env_overrides)
 }
 
 /// Install file configuration before creating the source registry.
@@ -384,6 +390,49 @@ fn apply_env_overrides(mut config: Config) -> Config {
     }
     if std::env::var("RESEARCH_MASTER_CACHE_ENABLED").is_ok() {
         config.cache.enabled = env_flag("RESEARCH_MASTER_CACHE_ENABLED");
+    }
+    if let Ok(value) = std::env::var("RESEARCH_MASTER_CACHE_DIRECTORY") {
+        config.cache.directory = Some(value.into());
+    }
+    macro_rules! override_number {
+        ($name:literal, $field:expr) => {
+            if let Ok(value) = std::env::var($name) {
+                if let Ok(value) = value.parse() {
+                    $field = value;
+                }
+            }
+        };
+    }
+    override_number!(
+        "RESEARCH_MASTER_CACHE_SEARCH_TTL_SECONDS",
+        config.cache.search_ttl_seconds
+    );
+    override_number!(
+        "RESEARCH_MASTER_CACHE_CITATION_TTL_SECONDS",
+        config.cache.citation_ttl_seconds
+    );
+    override_number!(
+        "RESEARCH_MASTER_CACHE_MAX_SIZE_MB",
+        config.cache.max_size_mb
+    );
+    override_number!(
+        "RESEARCH_MASTER_RATE_LIMITS_DEFAULT_REQUESTS_PER_SECOND",
+        config.rate_limits.default_requests_per_second
+    );
+    override_number!(
+        "RESEARCH_MASTER_RATE_LIMITS_MAX_CONCURRENT_REQUESTS",
+        config.rate_limits.max_concurrent_requests
+    );
+    override_number!(
+        "RESEARCH_MASTER_DOWNLOADS_MAX_FILE_SIZE_MB",
+        config.downloads.max_file_size_mb
+    );
+    if let Ok(value) = std::env::var("RESEARCH_MASTER_DOWNLOADS_DEFAULT_PATH") {
+        config.downloads.default_path = value.into();
+    }
+    if std::env::var("RESEARCH_MASTER_DOWNLOADS_ORGANIZE_BY_SOURCE").is_ok() {
+        config.downloads.organize_by_source =
+            env_flag("RESEARCH_MASTER_DOWNLOADS_ORGANIZE_BY_SOURCE");
     }
     config
 }

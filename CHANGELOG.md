@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Google Scholar capabilities reduced to search only (no longer claims DOI lookup)
 
 ### Fixed
+- Corrected response parsing for Crossref, Unpaywall, Semantic Scholar, Europe PMC, PMC, DBLP, Dimensions, HAL, Springer, OpenAlex, INSPIRE, IEEE and DOAJ; Google Scholar now reports its unimplemented parser honestly.
+- Fixed circuit breaker recovery, retry deadlines and status classification, bounded downloads, proxy credential redaction, file-config rate limits and CLI timeouts.
+- Fixed handler panics, web search status handling, durable paper writes, CSV and export validation, unknown-source errors, enrichment deadlines and author-search failures.
+- Fixed empty-DOI deduplication, retraction writeback races, screening duplicates and statistics parsing, watch caps and recreation, history atomicity, and cache directories, keys and eviction.
+- Sanitized IACR filenames, guarded zip extraction, corrected update checksum verification, and fixed doctor endpoints, CLI source choices and search flags.
+- Deferred: per-source proxy wiring, fractional per-source rates, streaming Result API, file-based API key wiring, env-lock unification and streaming pagination.
 - OpenAIRE: every result parsed with an empty title, abstract, authors and DOI — the structs modeled the wrong shapes (title/description/creator/webresource-url are objects or object arrays with the payload under `$`, and numeric `$` values like pmids exist), and serde's `visit_seq` fallback let an untagged `One(T)` variant greedily match a result array as a one-element sequence, silently defaulting the record. Variants reordered (`Many` before `One`), shapes modeled from a live capture, and a guard refuses DOI lookups whose parsed record carries no DOI pid
 - PubMed: search silently returned nothing for every query — the efetch XML parser never matched attributes (quick-xml requires `@Name` renames) and inline markup like `<italic>` split `$text` into duplicate events; year filters now use `mindate`/`maxdate` bounds (the old `reldate` values were invalid day counts) and the author filter is ANDed into the single `term` parameter instead of emitting a duplicate one
 - OSF: search silently returned nothing because the API rejects literal `[`/`]` in query URLs (now percent-encoded); DOI lookup was removed from the cross-source fan-out and returns an honest error (the API has no filterable `doi` field)

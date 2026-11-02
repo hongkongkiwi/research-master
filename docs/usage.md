@@ -17,10 +17,10 @@ research-master mcp --stdio
 For clients that support HTTP-based MCP connections:
 
 ```bash
-research-master mcp --port 3000 --host 0.0.0.0
+research-master mcp --transport sse --port 3000 --host 127.0.0.1
 ```
 
-Then configure your client to connect to `http://localhost:3000/sse`.
+Then configure your client to connect to `http://localhost:3000/sse`. Use `--transport http` for streamable HTTP instead. `--host` and `--port` apply to both HTTP transports.
 
 ## CLI Commands
 
@@ -44,6 +44,11 @@ research-master search "transformer architecture" --year 2020-
 | `--order <ORDER>` | Sort order: asc, desc |
 | `-c, --category <CAT>` | Category/subject filter |
 | `--author <NAME>` | Author name filter |
+| `--include-types <TYPES>` | Include comma-separated types; repeatable |
+| `--exclude-types <TYPES>` | Exclude comma-separated types; repeatable |
+| `--strict-types` | Exclude unclassified papers when using include types |
+| `--fulltext` | Search full text where supported |
+| `--filter <KEY=VALUE>` | Source-specific filter; repeatable |
 | `--dedup` | Deduplicate results |
 | `--dedup-strategy <STRAT>` | Deduplication strategy: first, last, mark |
 | `--fetch-details` | Fetch detailed information (slower but more complete, default: true) |
@@ -74,7 +79,7 @@ research-master author "Geoffrey Hinton" --source semantic
 Download a paper PDF to your local filesystem.
 
 ```bash
-research-master download 2301.12345 --source arxiv --output ./papers
+research-master download 2301.12345 --source arxiv --output-path ./papers
 ```
 
 **Options:**
@@ -83,7 +88,7 @@ research-master download 2301.12345 --source arxiv --output ./papers
 |--------|-------------|
 | `paper_id` (required) | Paper identifier |
 | `-s, --source <SOURCE>` | Paper source (required for CLI) |
-| `-o, --output <PATH>` | Save path (default: ./downloads) |
+| `--output-path <PATH>` | Save path (default: ./downloads) |
 | `--auto-filename` | Auto-generate filename from title (default: true) |
 | `--create-dir` | Create parent directory if needed |
 | `--doi <DOI>` | Paper DOI (optional, for verification) |
@@ -93,7 +98,7 @@ research-master download 2301.12345 --source arxiv --output ./papers
 Read and extract text from a paper's PDF.
 
 ```bash
-research-master read 2301.12345 --source arxiv --output extracted.txt
+research-master read 2301.12345 --source arxiv --path ./paper.pdf --output-file extracted.txt
 ```
 
 **Options:**
@@ -105,7 +110,7 @@ research-master read 2301.12345 --source arxiv --output extracted.txt
 | `-p, --path <PATH>` | Path to PDF or where to download (default: ./downloads) |
 | `--download-if-missing` | Download PDF if not found locally (default: true) |
 | `--pages <N>` | Number of pages to extract (0 = all) |
-| `-o, --output <PATH>` | Write extracted text to file |
+| `-O, --output-file <PATH>` | Write extracted text to file |
 
 **Note:** Requires poppler to be installed for PDF text extraction.
 
@@ -157,12 +162,12 @@ research-master related 1706.03762 --source connected_papers
 | `-s, --source <SOURCE>` | Source to search (default: connected_papers) |
 | `-m, --max-results <N>` | Maximum results (default: 20) |
 
-### Lookup Command (`lookup` or `doi`)
+### Lookup Command (`lookup-by-doi` or `doi`)
 
 Look up a paper by its DOI.
 
 ```bash
-research-master lookup 10.48550/arXiv.2301.12345
+research-master lookup-by-doi 10.48550/arXiv.2301.12345
 ```
 
 **Options:**
@@ -246,7 +251,7 @@ research-master update --dry-run
 Remove duplicate papers from a JSON file.
 
 ```bash
-research-master dedupe papers.json --strategy first --output deduplicated.json
+research-master dedupe papers.json --strategy first --output-file deduplicated.json
 
 # Just show duplicates without removing
 research-master dedupe papers.json --show
@@ -257,7 +262,7 @@ research-master dedupe papers.json --show
 | Option | Description |
 |--------|-------------|
 | `input` (required) | Input JSON file containing papers |
-| `-o, --output <PATH>` | Output file (default: overwrite input) |
+| `-O, --output-file <PATH>` | Output file (default: overwrite input) |
 | `-s, --strategy <STRAT>` | Deduplication strategy: first, last, mark (default: first) |
 | `--show` | Show duplicate groups without removing |
 
@@ -466,13 +471,13 @@ research-master search "transformer architecture" --year 2020-
 research-master author "Geoffrey Hinton"
 
 # Download a paper
-research-master download 2301.12345 --source arxiv --output ./papers
+research-master download 2301.12345 --source arxiv --output-path ./papers
 
 # Read extracted text from a PDF
-research-master read 2301.12345 --source arxiv --output extracted.txt
+research-master read 2301.12345 --source arxiv --path ./paper.pdf --output-file extracted.txt
 
 # Look up by DOI
-research-master lookup 10.48550/arXiv.2301.12345
+research-master lookup-by-doi 10.48550/arXiv.2301.12345
 
 # Get citations
 research-master citations 2301.12345 --source arxiv

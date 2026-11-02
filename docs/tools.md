@@ -261,7 +261,7 @@ The unified tools automatically detect the appropriate source, so you don't need
 
 ## Reading and Evidence Tools
 
-- `get_paper_outline` / `read_paper_section`: extract a section outline from a paper's PDF text, then read one section at a time (bounded to 12000 characters per call).
+- `get_paper_outline` / `read_paper_section`: extract a section outline from a paper's PDF text, then read one section at a time (bounded to 12000 characters per call). `read_paper_section` accepts `offset` in bytes relative to the section; pass its `next_start` value to continue, at a UTF-8 boundary.
 - `get_paper_latex`: fetch the LaTeX source of an arXiv paper, the reliable path for equations.
 - `get_citation_tallies`: Scite-style counts (supporting / contradicting / mentioning) per DOI, plus OpenAlex retraction status.
 - `extract_pdf_references` / `extract_pdf_header`: parse a local PDF's references or header metadata via a self-hosted GROBID service (`GROBID_URL`, default http://localhost:8070).

@@ -41,13 +41,13 @@ mod panel;
     research-master author \"Yoshua Bengio\" --max-results 10
 
     # Download a paper by arXiv ID
-    research-master download 2310.12345 --source arxiv --output ./papers/
+    research-master download 2310.12345 --source arxiv --output-path ./papers/
 
     # Read/extract text from a PDF
     research-master read 2310.12345 --source arxiv --path ./paper.pdf
 
     # Look up a paper by DOI
-    research-master lookup 10.1038/nature12373
+    research-master lookup-by-doi 10.1038/nature12373
 
     # Get citations for a paper
     research-master citations 2310.12345 --source arxiv
@@ -73,7 +73,7 @@ mod panel;
     research-master export --input papers.json --format ris -O output.ris
 
     # Bulk download from a file of paper IDs
-    research-master bulk-download ./paper_ids.txt -o ./downloads/
+    research-master bulk-download ./paper_ids.txt --output-dir ./downloads/
 
     # Manage API keys
     research-master api-keys list              # List configured keys
@@ -218,6 +218,14 @@ enum Source {
     GoogleScholar,
     #[value(name = "clinical_trials")]
     ClinicalTrials,
+    #[value(name = "medrxiv")]
+    Medrxiv,
+    #[value(name = "orcid")]
+    Orcid,
+    #[value(name = "citeseerx")]
+    Citeseerx,
+    #[value(name = "openaire")]
+    Openaire,
     #[value(name = "all")]
     All,
 }
@@ -343,6 +351,26 @@ enum Commands {
         /// Author filter
         #[arg(long, short)]
         author: Option<String>,
+
+        /// Publication types to include, comma-separated or repeated
+        #[arg(long, value_delimiter = ',')]
+        include_types: Vec<String>,
+
+        /// Publication types to exclude, comma-separated or repeated
+        #[arg(long, value_delimiter = ',')]
+        exclude_types: Vec<String>,
+
+        /// Exclude unclassified papers when including types
+        #[arg(long)]
+        strict_types: bool,
+
+        /// Search full text where supported
+        #[arg(long)]
+        fulltext: bool,
+
+        /// Source-specific filter, in key=value form
+        #[arg(long, value_parser = parse_filter)]
+        filter: Vec<(String, String)>,
 
         /// Deduplicate results across sources
         #[arg(long)]
@@ -644,7 +672,7 @@ enum Commands {
         input: PathBuf,
 
         /// Output directory for downloads
-        #[arg(long, short = 'o', default_value = "./downloads")]
+        #[arg(long, default_value = "./downloads")]
         output_dir: PathBuf,
 
         /// Source to use if not specified in file
@@ -821,6 +849,62 @@ enum CapabilityFilter {
     AuthorSearch,
 }
 
+fn probe_endpoint(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "arxiv" => "https://arxiv.org",
+        "pubmed" => "https://eutils.ncbi.nlm.nih.gov",
+        "biorxiv" => "https://api.biorxiv.org",
+        "medrxiv" => "https://api.medrxiv.org",
+        "semantic" => "https://api.semanticscholar.org",
+        "openalex" => "https://api.openalex.org",
+        "crossref" => "https://api.crossref.org",
+        "europe_pmc" => "https://www.ebi.ac.uk",
+        "pmc" => "https://www.ncbi.nlm.nih.gov",
+        "hal" => "https://api.archives-ouvertes.fr",
+        "dblp" => "https://dblp.org",
+        "ssrn" => "https://www.ssrn.com",
+        "ieee_xplore" => "https://ieeexploreapi.ieee.org",
+        "core" => "https://api.core.ac.uk",
+        "zenodo" => "https://zenodo.org",
+        "datacite" => "https://api.datacite.org",
+        "inspire" => "https://inspirehep.net",
+        "ads" => "https://api.adsabs.harvard.edu",
+        "unpaywall" => "https://api.unpaywall.org",
+        "mdpi" => "https://www.mdpi.com",
+        "doaj" => "https://doaj.org",
+        "osf" => "https://api.osf.io",
+        "base" => "https://api.base-search.net",
+        "springer" => "https://link.springer.com",
+        "iacr" => "https://eprint.iacr.org",
+        "orcid" => "https://pub.orcid.org",
+        "openaire" => "https://api.openaire.eu",
+        "clinical_trials" => "https://clinicaltrials.gov",
+        "dimensions" => "https://app.dimensions.ai",
+        _ => return None,
+    })
+}
+
+fn redact_proxy(value: &str) -> String {
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return "<unparseable-proxy>".to_string();
+    };
+    let Some(host) = url.host_str() else {
+        return "<unparseable-proxy>".to_string();
+    };
+    match url.port() {
+        Some(port) => format!("{}://{}:{}", url.scheme(), host, port),
+        None => format!("{}://{}", url.scheme(), host),
+    }
+}
+
+fn parse_filter(value: &str) -> Result<(String, String), String> {
+    let (key, value) = value.split_once('=').ok_or("expected key=value")?;
+    if key.is_empty() {
+        return Err("filter key cannot be empty".to_string());
+    }
+    Ok((key.to_string(), value.to_string()))
+}
+
 /// Print all available environment variables
 fn print_env_vars() {
     println!("Research Master MCP - Environment Variables");
@@ -828,6 +912,12 @@ fn print_env_vars() {
     println!("API Keys:");
     println!("  SEMANTIC_SCHOLAR_API_KEY    API key for Semantic Scholar (higher rate limits)");
     println!("  CORE_API_KEY                API key for CORE service");
+    println!("  IEEE_XPLORE_API_KEY         API key for IEEE Xplore");
+    println!("  ACM_API_KEY                 API key for ACM");
+    println!("  SPRINGER_API_KEY            API key for Springer");
+    println!("  DIMENSIONS_API_KEY          API key for Dimensions");
+    println!("  JSTOR_API_KEY               API key for JSTOR");
+    println!("  MDPI_API_KEY                API key for MDPI");
     println!("  OPENALEX_API_KEY            Free key for OpenAlex's own daily budget (openalex.org/settings/api)");
     println!(
         "  OPENALEX_EMAIL              Email identifying requests to OpenAlex (metadata only)"
@@ -878,6 +968,7 @@ fn print_env_vars() {
     println!("  RESEARCH_MASTER_CACHE_CITATION_TTL_SECONDS   TTL for citation results (default: 900 = 15 min)");
     println!();
     println!("Other Settings:");
+    println!("  RESEARCH_MASTER_HTTP_TOKEN   Bearer token for HTTP MCP transport");
     println!("  RUST_LOG                    Rust logging level (e.g., debug, info, warn, error)");
     println!("  RESEARCH_MASTER_SCREENINGS_PATH            Directory for screening sessions (screenings.jsonl; default: user config dir)");
     println!();
@@ -937,8 +1028,8 @@ async fn main() -> Result<()> {
         subscriber.init();
     }
 
-    // Set timeout
-    tokio::time::sleep(Duration::from_secs(0)).await; // Just to ensure runtime is initialized
+    research_master::utils::set_global_timeout(Duration::from_secs(cli.timeout))
+        .map_err(|timeout| anyhow::anyhow!("Could not set request timeout to {:?}", timeout))?;
 
     if let Some(config_path) = cli.config.clone().or_else(find_config_file) {
         let config = load_config(&config_path)?;
@@ -961,6 +1052,11 @@ async fn main() -> Result<()> {
             order,
             category,
             author,
+            include_types,
+            exclude_types,
+            strict_types,
+            fulltext,
+            filter,
             dedup,
             dedup_strategy,
             fetch_details,
@@ -984,6 +1080,16 @@ async fn main() -> Result<()> {
             search_query.author = author;
             search_query.fetch_details = fetch_details;
             search_query.license_policy = license.policy();
+            search_query = search_query
+                .include_types(include_types)
+                .exclude_types(exclude_types)
+                .strict_types(strict_types);
+            for (key, value) in filter {
+                search_query = search_query.filter(key, value);
+            }
+            if fulltext {
+                search_query = search_query.filter("fulltext", "true");
+            }
 
             let sources = get_sources(&registry, source, SourceCapabilities::SEARCH);
             let all_papers = Arc::new(Mutex::new(Vec::new()));
@@ -1061,13 +1167,13 @@ async fn main() -> Result<()> {
                                 pb.set_message(msg);
                                 pb.finish();
                             }
-                            return response.papers;
+                            return Ok(response.papers);
                         }
                     }
                     if let (Some(cache_service), Some(pb)) = (cache.as_ref(), pb.as_ref()) {
                         match cache_service.get_search(&search_query, &src_id_for_handle) {
                             research_master::utils::CacheResult::Hit(response) => {
-                                return response.papers;
+                                return Ok(response.papers);
                             }
                             research_master::utils::CacheResult::Expired => {
                                 pb.set_message("refreshing...");
@@ -1092,7 +1198,7 @@ async fn main() -> Result<()> {
                                         pb.set_style(style);
                                         pb.set_message(msg);
                                         pb.finish();
-                                        return response.papers;
+                                        return Ok(response.papers);
                                     }
                                     Err(e) => {
                                         let elapsed = start.elapsed();
@@ -1108,7 +1214,7 @@ async fn main() -> Result<()> {
                                         pb.set_style(style);
                                         pb.set_message(msg);
                                         pb.finish();
-                                        return Vec::new();
+                                        return Err(e.to_string());
                                     }
                                 }
                             }
@@ -1134,7 +1240,7 @@ async fn main() -> Result<()> {
                                         pb.set_style(style);
                                         pb.set_message(msg);
                                         pb.finish();
-                                        return response.papers;
+                                        return Ok(response.papers);
                                     }
                                     Err(e) => {
                                         let elapsed = start.elapsed();
@@ -1150,7 +1256,7 @@ async fn main() -> Result<()> {
                                         pb.set_style(style);
                                         pb.set_message(msg);
                                         pb.finish();
-                                        return Vec::new();
+                                        return Err(e.to_string());
                                     }
                                 }
                             }
@@ -1181,7 +1287,7 @@ async fn main() -> Result<()> {
                                 pb.set_message(msg);
                                 pb.finish();
                             }
-                            response.papers
+                            Ok(response.papers)
                         }
                         Err(e) => {
                             let elapsed = start.elapsed();
@@ -1198,7 +1304,7 @@ async fn main() -> Result<()> {
                                 pb.set_message(msg);
                                 pb.finish();
                             }
-                            Vec::new()
+                            Err(e.to_string())
                         }
                     }
                 });
@@ -1207,16 +1313,26 @@ async fn main() -> Result<()> {
             }
 
             // Wait for all tasks to complete and collect results
+            let attempted = handles.len();
+            let mut failures = 0;
             for (source_id, handle, _pb) in handles {
                 match handle.await {
-                    Ok(papers) => {
+                    Ok(Ok(papers)) => {
                         let mut all_papers = all_papers.lock().expect("mutex not poisoned");
                         all_papers.extend(papers);
                     }
+                    Ok(Err(e)) => {
+                        failures += 1;
+                        eprintln!("{}: {}", source_id, e);
+                    }
                     Err(e) => {
-                        tracing::warn!("Task error for {}: {}", source_id, e);
+                        failures += 1;
+                        eprintln!("Task error for {}: {}", source_id, e);
                     }
                 }
+            }
+            if attempted > 0 && failures == attempted {
+                anyhow::bail!("All attempted sources failed");
             }
 
             // Clear the progress display
@@ -1240,7 +1356,10 @@ async fn main() -> Result<()> {
             }
 
             let license_policy = license.policy();
-            all_papers.retain(|paper| license_policy.allows(paper.license.as_deref()));
+            all_papers.retain(|paper| {
+                license_policy.allows(paper.license.as_deref())
+                    && search_query.type_filter_allows(paper)
+            });
             let source_id = (source != Source::All).then(|| source_to_id(source));
             if let Err(error) = HistoryService::new().add_search(&query, source_id) {
                 tracing::warn!("Could not record search history: {}", error);
@@ -1739,10 +1858,14 @@ async fn main() -> Result<()> {
             }
 
             // Check connectivity if requested
+            let mut connectivity_failed = false;
             if check_connectivity {
                 println!("\n[Connectivity]");
                 for (id, name, _) in &sources_info {
-                    let test_url = format!("https://{}.org", id.replace('_', ""));
+                    let Some(test_url) = probe_endpoint(id) else {
+                        println!("  - {}: SKIP (no endpoint)", name);
+                        continue;
+                    };
                     // Same proxy config as the research sources; system
                     // detection alone would miss RESEARCH_MASTER_PROXY.
                     let probe_client =
@@ -1750,19 +1873,22 @@ async fn main() -> Result<()> {
                             .apply_to(reqwest::Client::builder())
                             .and_then(|b| b.timeout(std::time::Duration::from_secs(5)).build());
                     let Ok(client) = probe_client else {
+                        connectivity_failed = true;
                         println!("  - {}: ERROR (client build)", name);
                         continue;
                     };
-                    match client.head(&test_url).send().await {
+                    match client.head(test_url).send().await {
                         Ok(resp) => {
                             let status = if resp.status().is_success() {
                                 "OK"
                             } else {
+                                connectivity_failed = true;
                                 "ERROR"
                             };
                             println!("  - {}: {} ({})", name, status, resp.status());
                         }
                         Err(e) => {
+                            connectivity_failed = true;
                             println!(
                                 "  - {}: ERROR ({})",
                                 name,
@@ -1792,10 +1918,10 @@ async fn main() -> Result<()> {
             let https_proxy = std::env::var("HTTPS_PROXY").ok();
             if http_proxy.is_some() || https_proxy.is_some() {
                 if let Some(http) = &http_proxy {
-                    println!("  - HTTP_PROXY: {}", http);
+                    println!("  - HTTP_PROXY: {}", redact_proxy(http));
                 }
                 if let Some(https) = &https_proxy {
-                    println!("  - HTTPS_PROXY: {}", https);
+                    println!("  - HTTPS_PROXY: {}", redact_proxy(https));
                 }
             } else {
                 println!("  - No proxy configured (direct connection)");
@@ -1803,18 +1929,19 @@ async fn main() -> Result<()> {
 
             println!("\n================================");
             println!("Doctor check complete.");
+            if connectivity_failed {
+                println!("Connectivity errors detected; exiting with status 1.");
+                std::process::exit(1);
+            }
         }
 
         Some(Commands::Update { force, dry_run }) => {
-            use anyhow::Context as _;
             use research_master::utils::{
                 detect_installation, download_and_extract_asset, fetch_and_verify_sha256,
                 fetch_latest_release, fetch_sha256_signature, find_asset_for_platform,
                 get_current_target, get_update_instructions, replace_binary, verify_gpg_signature,
                 verify_sha256, InstallationMethod,
             };
-            #[cfg(unix)]
-            use std::os::unix::fs::PermissionsExt;
 
             let current_version = env!("CARGO_PKG_VERSION");
             println!("Research Master MCP Updater");
@@ -1913,7 +2040,9 @@ async fn main() -> Result<()> {
                     // Download and extract
                     #[allow(clippy::needless_borrow)]
                     match download_and_extract_asset(&asset, &temp_dir).await {
-                        Ok(archive_path) => {
+                        Ok(extracted) => {
+                            let archive_path = extracted.archive;
+                            let binary_path = extracted.binary;
                             // Fetch expected SHA256 checksum
                             let expected_checksum = match fetch_and_verify_sha256(
                                 &asset.name,
@@ -1980,62 +2109,6 @@ async fn main() -> Result<()> {
                                     }
                                 }
                             }
-
-                            // Extract the archive
-                            let binary_path = if asset.name.ends_with(".tar.gz") {
-                                use std::process::Command;
-                                let output = Command::new("tar")
-                                    .args([
-                                        "xzf",
-                                        archive_path.to_string_lossy().as_ref(),
-                                        "-C",
-                                        temp_dir.to_string_lossy().as_ref(),
-                                    ])
-                                    .output()
-                                    .context("Failed to extract archive")?;
-
-                                if !output.status.success() {
-                                    anyhow::bail!(
-                                        "Extraction failed: {}",
-                                        String::from_utf8_lossy(&output.stderr)
-                                    );
-                                }
-
-                                // Find the binary
-                                let mut binary_path = None;
-                                for entry in std::fs::read_dir(&temp_dir)? {
-                                    let entry = entry?;
-                                    let path = entry.path();
-                                    if path.is_file()
-                                        && path
-                                            .file_name()
-                                            .map(|n| {
-                                                n.to_string_lossy().starts_with("research-master")
-                                            })
-                                            .unwrap_or(false)
-                                    {
-                                        // Make executable
-                                        #[cfg(unix)]
-                                        {
-                                            let mut perms = std::fs::metadata(&path)?.permissions();
-                                            perms.set_mode(0o755);
-                                            std::fs::set_permissions(&path, perms)?;
-                                        }
-                                        #[cfg(not(unix))]
-                                        {
-                                            // On Windows, just ensure the file is writable
-                                            let mut perms = std::fs::metadata(&path)?.permissions();
-                                            perms.set_readonly(false);
-                                            std::fs::set_permissions(&path, perms)?;
-                                        }
-                                        binary_path = Some(path);
-                                        break;
-                                    }
-                                }
-                                binary_path.context("Could not find binary in archive")?
-                            } else {
-                                anyhow::bail!("Unsupported archive format");
-                            };
 
                             println!("\nDownloaded and extracted to: {}", binary_path.display());
 
@@ -2419,7 +2492,7 @@ directory = "~/.cache/research-master"
                 println!("All cleared.");
             } else {
                 if cache {
-                    let cache_service = CacheService::new();
+                    let cache_service = CacheService::from_config(config.cache.clone());
                     cache_service.clear_all()?;
                     println!("Cleared cache.");
                 }
@@ -2604,6 +2677,10 @@ fn source_to_id(source: Source) -> &'static str {
         Source::Springer => "springer",
         Source::GoogleScholar => "google_scholar",
         Source::ClinicalTrials => "clinical_trials",
+        Source::Medrxiv => "medrxiv",
+        Source::Orcid => "orcid",
+        Source::Citeseerx => "citeseerx",
+        Source::Openaire => "openaire",
         Source::All => unreachable!(),
     }
 }
@@ -2775,6 +2852,65 @@ mod tests {
     fn test_cli_no_cache_flag() {
         let cli = Cli::parse_from(["research-master", "--no-cache"]);
         assert!(cli.no_cache);
+    }
+
+    #[test]
+    fn test_search_filters_and_bulk_output_dir() {
+        let cli = Cli::parse_from([
+            "research-master",
+            "search",
+            "query",
+            "--include-types",
+            "review,rct",
+            "--include-types",
+            "article",
+            "--exclude-types",
+            "case-report",
+            "--strict-types",
+            "--fulltext",
+            "--filter",
+            "mesh=Neoplasms",
+            "--filter",
+            "provider=psyarxiv",
+        ]);
+        match cli.command {
+            Some(Commands::Search {
+                include_types,
+                exclude_types,
+                strict_types,
+                fulltext,
+                filter,
+                ..
+            }) => {
+                assert_eq!(include_types, ["review", "rct", "article"]);
+                assert_eq!(exclude_types, ["case-report"]);
+                assert!(strict_types && fulltext);
+                assert_eq!(filter.len(), 2);
+            }
+            _ => panic!("Expected Search command"),
+        }
+        assert!(
+            Cli::try_parse_from(["research-master", "search", "query", "--filter", "invalid"])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from([
+            "research-master",
+            "bulk-download",
+            "ids.txt",
+            "--output-dir",
+            "papers"
+        ])
+        .is_ok());
+        for source in ["medrxiv", "orcid", "citeseerx", "openaire"] {
+            assert!(Cli::try_parse_from([
+                "research-master",
+                "search",
+                "query",
+                "--source",
+                source
+            ])
+            .is_ok());
+        }
     }
 
     #[test]
@@ -3375,6 +3511,7 @@ mod tests {
                 dedup_strategy,
                 fetch_details,
                 license,
+                ..
             }) => {
                 assert_eq!(query, "transformer");
                 assert_eq!(*source, Source::Arxiv);

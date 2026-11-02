@@ -56,7 +56,7 @@ default_disabled_sources = "biorxiv,pmc,pubmed"
 
 ## Environment Variables
 
-All settings can be overridden using environment variables with the `RESEARCH_MASTER_` prefix.
+Documented environment variables override their corresponding configuration values. File-based API keys are not yet used by source clients; set the source-specific environment variables instead.
 
 ### Source Filtering
 
@@ -111,7 +111,7 @@ export RESEARCH_MASTER_DEFAULT_DISABLED_SOURCES="biorxiv,pmc,pubmed"
 | `CORE_API_KEY` | API key for CORE service |
 | `OPENALEX_EMAIL` | Email identifying the caller to OpenAlex (metadata only; the polite pool was retired) |
 | `OPENALEX_API_KEY` | Free API key for OpenAlex's own daily budget; keyless list/search calls share a small per-IP allowance. Create at openalex.org/settings/api |
-| `IEEEXPLORE_API_KEY` | API key for IEEE Xplore |
+| `IEEE_XPLORE_API_KEY` | API key for IEEE Xplore |
 | `JSTOR_API_KEY` | API key for JSTOR |
 | `ACM_API_KEY` | API key for ACM Digital Library |
 | `SPRINGER_API_KEY` | API key for Springer |
@@ -169,7 +169,7 @@ export HTTPS_PROXY=http://proxy:8080
 export NO_PROXY=localhost,127.0.0.1
 ```
 
-All source lookups and the `web_search`, `web_extract`, and `github_search` tools honor this configuration. The CLI flags `--http-proxy`, `--https-proxy`, and `--no-proxy` override the environment variables. `RESEARCH_MASTER_PROXY_HTTP` and `RESEARCH_MASTER_PROXY_HTTPS` (format: `source_id:proxy_url`) set per-source proxies.
+All source lookups and the `web_search`, `web_extract`, and `github_search` tools honor this configuration. The CLI flags `--http-proxy`, `--https-proxy`, and `--no-proxy` override the environment variables. `RESEARCH_MASTER_PROXY_HTTP` and `RESEARCH_MASTER_PROXY_HTTPS` (format: `source_id:proxy_url`) are parsed but per-source proxy wiring is not yet implemented.
 
 ### Download Settings
 

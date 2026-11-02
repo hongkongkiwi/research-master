@@ -184,8 +184,8 @@ fn default_max_cache_size() -> usize {
     500
 }
 
-/// Proxy configuration
-#[derive(Debug, Default, Serialize, Deserialize)]
+/// Proxy settings consumed by the HTTP client configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProxyConfig {
     #[serde(default)]
     pub http: Option<String>,
