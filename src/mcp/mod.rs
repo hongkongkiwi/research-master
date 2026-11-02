@@ -57,6 +57,7 @@ pub mod http_auth;
 pub mod prompts;
 pub mod server;
 pub mod sse;
+pub mod stdio_transport;
 mod tools;
 pub mod unified_tools;
 

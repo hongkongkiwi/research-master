@@ -888,6 +888,7 @@ async fn main() -> Result<()> {
     let env_filter = if cli.quiet { "error" } else { "warn" };
 
     let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr) // stdout carries the JSON-RPC stream in stdio mode
         .with_level(false) // Don't show log level
         .with_target(false) // Don't show target
         .with_thread_ids(false)

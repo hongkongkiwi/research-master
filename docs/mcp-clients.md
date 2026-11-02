@@ -422,17 +422,13 @@ Research Master works with any MCP-compatible client. General configuration patt
 - **AgentOps**: Configure via dashboard
 - **LangChain agents**: Pass via MCPConfig
 
-For HTTP transports (alternative to stdio), pick the protocol with `--transport`:
+For HTTP/SSE mode (alternative to stdio):
 
 ```bash
-# Legacy HTTP + SSE (spec 2024-11-05): GET /sse plus POST /messages
-research-master mcp --transport sse --port 3000
-
-# Streamable HTTP (current spec): JSON-RPC at the server root
-research-master mcp --transport http --port 3000
+research-master mcp --port 3000 --host 0.0.0.0
 ```
 
-Then configure clients that connect over HTTP with the SSE endpoint URL:
+Then configure with HTTP endpoint:
 ```json
 {
   "mcpServers": {
@@ -442,11 +438,6 @@ Then configure clients that connect over HTTP with the SSE endpoint URL:
   }
 }
 ```
-
-Both HTTP transports accept `RESEARCH_MASTER_HTTP_TOKEN`: when set, every
-request must present `Authorization: Bearer <token>`. Without it the server
-is open to whoever can reach the port, so bind to loopback unless that is
-intended.
 
 ## Common Configuration Options
 

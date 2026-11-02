@@ -531,6 +531,13 @@ async fn unpaywall_pdf_fallback(
     let path_str = path.to_string_lossy().to_string();
 
     let client = crate::utils::HttpClient::new().map_err(|e| e.to_string())?;
+    // Only http/https: the URL comes from third-party OA records, and the
+    // reqwest default would reject file:// etc., but say so explicitly.
+    if !pdf_url.starts_with("http://") && !pdf_url.starts_with("https://") {
+        return Err(format!(
+            "OA record points at an unsupported URL scheme: {pdf_url}"
+        ));
+    }
     let response = client
         .get(&pdf_url)
         .send()
@@ -542,10 +549,31 @@ async fn unpaywall_pdf_fallback(
             response.status()
         ));
     }
+    // Content-length first, then a streaming cap for servers that omit it:
+    // an unbounded body could fill the disk.
+    const MAX_PDF_BYTES: u64 = 200 * 1024 * 1024;
+    if let Some(len) = response.content_length() {
+        if len > MAX_PDF_BYTES {
+            return Err(format!(
+                "OA PDF too large ({len} bytes, limit {MAX_PDF_BYTES})"
+            ));
+        }
+    }
     let bytes = response
         .bytes()
         .await
         .map_err(|e| format!("Failed to read OA PDF body: {e}"))?;
+    if bytes.len() as u64 > MAX_PDF_BYTES {
+        return Err(format!(
+            "OA PDF too large ({} bytes, limit {MAX_PDF_BYTES})",
+            bytes.len()
+        ));
+    }
+    // A misconfigured OA endpoint can serve an HTML error page; saving that
+    // as .pdf produces a corrupt file.
+    if bytes.starts_with(b"<!DOCTYPE") || bytes.starts_with(b"<html") {
+        return Err("OA endpoint returned HTML instead of a PDF".to_string());
+    }
     tokio::fs::create_dir_all(dir)
         .await
         .map_err(|e| format!("Failed to create output dir: {e}"))?;

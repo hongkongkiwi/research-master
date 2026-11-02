@@ -53,10 +53,10 @@ pub struct AskAnswer {
 ///
 /// Lines are `{added_at, collection, tags, notes, paper}`; corrupt lines are skipped
 /// on load. Mutations rewrite the file atomically (temp file + rename).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PaperLibrary {
     path: PathBuf,
-    entries: Mutex<Vec<LibraryEntry>>,
+    entries: std::sync::Arc<Mutex<Vec<LibraryEntry>>>,
 }
 
 /// Jaro-Winkler similarity a document token needs to match a query term.
@@ -64,8 +64,26 @@ const FUZZY_THRESHOLD: f64 = 0.9;
 
 impl PaperLibrary {
     /// Library at the default config location.
+    ///
+    /// Calls with the same resolved path share one in-memory store: two
+    /// concurrent MCP tool calls would otherwise run competing
+    /// read-modify-write cycles on the JSONL file and lose each other's
+    /// entries. The cache is keyed by path so tests that override
+    /// RESEARCH_MASTER_LIBRARY_PATH keep working. Tests that need isolated
+    /// stores use [`PaperLibrary::from_path`].
     pub fn new() -> Self {
-        Self::from_path(default_path())
+        let path = default_path();
+        static LAST: std::sync::Mutex<Option<(PathBuf, PaperLibrary)>> =
+            std::sync::Mutex::new(None);
+        let mut last = LAST.lock().unwrap_or_else(|p| p.into_inner());
+        if last
+            .as_ref()
+            .map(|(cached, _)| cached != &path)
+            .unwrap_or(true)
+        {
+            *last = Some((path.clone(), Self::from_path(path.clone())));
+        }
+        last.as_ref().expect("cached store").1.clone()
     }
 
     /// Library at an explicit path; used by tests and for alternate storage locations.
@@ -73,7 +91,7 @@ impl PaperLibrary {
         let entries = load_entries(&path);
         Self {
             path,
-            entries: Mutex::new(entries),
+            entries: std::sync::Arc::new(Mutex::new(entries)),
         }
     }
 

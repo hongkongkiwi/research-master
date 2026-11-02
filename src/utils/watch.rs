@@ -39,16 +39,30 @@ pub struct Watch {
 /// Lines are `{query, created_at, last_checked, last_seen_ids}`; corrupt lines
 /// are skipped on load. Mutations rewrite the file atomically (temp file +
 /// rename), mirroring the paper library.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WatchStore {
     path: PathBuf,
-    watches: Mutex<Vec<Watch>>,
+    watches: std::sync::Arc<Mutex<Vec<Watch>>>,
 }
 
 impl WatchStore {
     /// Watch store at the default config location.
+    ///
+    /// Process-wide singleton (same rationale as PaperLibrary::new): sharing
+    /// one cached store prevents concurrent MCP tool calls from clobbering
+    /// each other's JSONL updates. Tests use from_path instead.
     pub fn new() -> Self {
-        Self::from_path(default_path())
+        let path = default_path();
+        static LAST: std::sync::Mutex<Option<(PathBuf, WatchStore)>> = std::sync::Mutex::new(None);
+        let mut last = LAST.lock().unwrap_or_else(|p| p.into_inner());
+        if last
+            .as_ref()
+            .map(|(cached, _)| cached != &path)
+            .unwrap_or(true)
+        {
+            *last = Some((path.clone(), Self::from_path(path.clone())));
+        }
+        last.as_ref().expect("cached store").1.clone()
     }
 
     /// Watch store at an explicit path; used by tests and for alternate storage.
@@ -56,7 +70,7 @@ impl WatchStore {
         let watches = load_watches(&path);
         Self {
             path,
-            watches: Mutex::new(watches),
+            watches: std::sync::Arc::new(Mutex::new(watches)),
         }
     }
 

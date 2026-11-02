@@ -94,19 +94,22 @@ impl McpServer {
     }
 
     /// Run the server in stdio mode (for Claude Desktop and other MCP clients)
-    pub async fn run(&self) -> Result<(), pmcp::Error> {
+    ///
+    /// Uses newline-delimited JSON-RPC framing per the MCP stdio transport
+    /// spec; pmcp 1.9.4's built-in stdio transport speaks LSP-style
+    /// Content-Length framing, which standard MCP clients do not send.
+    /// Consumes the server: `run` takes ownership of the inner `Server`.
+    pub async fn run(self) -> Result<(), pmcp::Error> {
         tracing::info!("Starting MCP server in stdio mode");
-
-        // run_stdio() takes ownership, so we need to extract the Server from Arc<Mutex>
-        // Since we own the Arc and there should be no other references at this point,
-        // we can try_unwrap to get the Server out
-        let server = Arc::try_unwrap(self.server.clone())
+        let server = Arc::try_unwrap(self.server)
             .map_err(|_| Error::internal("Cannot unwrap Arc - multiple references exist"))?
             .into_inner();
 
         tracing::info!("MCP server initialized");
 
-        server.run_stdio().await
+        server
+            .run(crate::mcp::stdio_transport::NdjsonStdioTransport::new())
+            .await
     }
 
     /// Run the server in HTTP/SSE mode
