@@ -216,6 +216,8 @@ enum Source {
     Springer,
     #[value(name = "google_scholar")]
     GoogleScholar,
+    #[value(name = "clinical_trials")]
+    ClinicalTrials,
     #[value(name = "all")]
     All,
 }
@@ -837,10 +839,19 @@ fn print_env_vars() {
     println!("  BRAVE_API_KEY               Web search fallback (web_search)");
     println!("  GITHUB_API_KEY              Higher GitHub search rate limit (github_search)");
     println!();
+    println!("Zotero Sync:");
+    println!("  ZOTERO_API_KEY              API key for Zotero sync (zotero.org/settings/keys)");
+    println!("  ZOTERO_USER_ID              Personal Zotero library id (preferred over group)");
+    println!("  ZOTERO_GROUP_ID             Group Zotero library id (used when user id unset)");
+    println!(
+        "  RESEARCH_MASTER_ZOTERO_API_URL  Zotero API base URL (default: https://api.zotero.org)"
+    );
+    println!();
     println!("Source-Specific Rate Limits:");
     println!("  SEMANTIC_SCHOLAR_RATE_LIMIT  Semantic Scholar requests per second (default: 1)");
     println!();
     println!("Global Proxy Settings:");
+    println!("  RESEARCH_MASTER_PROXY       General proxy URL for HTTP and HTTPS when the vars below are unset (http://, https://, socks5://, socks5h://)");
     println!("  HTTP_PROXY                  HTTP proxy URL (e.g., http://proxy:8080)");
     println!("  HTTPS_PROXY                 HTTPS proxy URL (e.g., https://proxy:8080)");
     println!("  NO_PROXY                    Comma-separated list of hosts to bypass proxy");
@@ -868,6 +879,7 @@ fn print_env_vars() {
     println!();
     println!("Other Settings:");
     println!("  RUST_LOG                    Rust logging level (e.g., debug, info, warn, error)");
+    println!("  RESEARCH_MASTER_SCREENINGS_PATH            Directory for screening sessions (screenings.jsonl; default: user config dir)");
     println!();
     println!("Example:");
     println!("  export SEMANTIC_SCHOLAR_API_KEY=\"your-key-here\"");
@@ -2581,6 +2593,7 @@ fn source_to_id(source: Source) -> &'static str {
         Source::Base => "base",
         Source::Springer => "springer",
         Source::GoogleScholar => "google_scholar",
+        Source::ClinicalTrials => "clinical_trials",
         Source::All => unreachable!(),
     }
 }

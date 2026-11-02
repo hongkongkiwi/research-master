@@ -152,6 +152,9 @@ fn expected_source_count() -> usize {
     if cfg!(feature = "source-citeseerx") {
         count += 1;
     }
+    if cfg!(feature = "source-clinical_trials") {
+        count += 1;
+    }
     if cfg!(feature = "source-medrxiv") {
         count += 1;
     }
@@ -598,6 +601,12 @@ fn expected_mcp_tool_names() -> Vec<&'static str> {
         "unwatch_topic",
         "extract_pdf_references",
         "extract_pdf_header",
+        "zotero_save",
+        "zotero_search",
+        "screening_start",
+        "screening_next",
+        "screening_decide",
+        "screening_summary",
     ]
 }
 

@@ -104,14 +104,52 @@ impl OpenAlexSource {
             .as_ref()
             .and_then(|p| p.url.clone());
 
-        PaperBuilder::new(paper_id, data.title.clone(), url, SourceType::OpenAlex)
-            .authors(authors)
-            .abstract_text(data.r#abstract.clone().unwrap_or_default())
-            .doi(doi)
-            .published_date(published_date.unwrap_or_default())
-            .pdf_url(pdf_url.unwrap_or_default())
-            .citations(data.cited_by_count.unwrap_or(0) as u32)
-            .build()
+        let categories = data.topics.as_ref().map(|topics| {
+            topics
+                .iter()
+                .filter_map(|t| t.display_name.as_deref())
+                .collect::<Vec<_>>()
+                .join(";")
+        });
+
+        let venue = data
+            .primary_location
+            .as_ref()
+            .and_then(|loc| loc.source.as_ref());
+
+        let mut builder =
+            PaperBuilder::new(paper_id, data.title.clone(), url, SourceType::OpenAlex)
+                .authors(authors)
+                .abstract_text(data.r#abstract.clone().unwrap_or_default())
+                .doi(doi)
+                .published_date(published_date.unwrap_or_default())
+                .pdf_url(pdf_url.unwrap_or_default())
+                .citations(data.cited_by_count.unwrap_or(0) as u32);
+
+        // `type` is kept verbatim (e.g. "article", "review", "preprint") so
+        // callers can filter on the API's own vocabulary.
+        if let Some(work_type) = data.work_type.as_ref() {
+            builder = builder.paper_type(work_type.clone());
+        }
+        if let Some(categories) = categories.filter(|c| !c.is_empty()) {
+            builder = builder.categories(categories);
+        }
+        if let Some(source) = venue {
+            if let Some(name) = source.display_name.as_ref() {
+                builder = builder.extra("venue", name.clone().into());
+            }
+            if let Some(count) = source.cited_by_count {
+                builder = builder.extra("venue_cited_by", count.into());
+            }
+            if let Some(count) = source.works_count {
+                builder = builder.extra("venue_works", count.into());
+            }
+        }
+        if data.is_retracted == Some(true) {
+            builder = builder.extra("is_retracted", true.into());
+        }
+
+        builder.build()
     }
 }
 
@@ -518,11 +556,37 @@ struct OAPaper {
     r#abstract: Option<String>,
     best_open_access_pdf: Option<OAPdf>,
     authorships: Vec<OAAuthorship>,
+    /// OpenAlex work type, verbatim ("article", "review", "preprint", ...)
+    #[serde(rename = "type")]
+    work_type: Option<String>,
+    topics: Option<Vec<OATopic>>,
+    primary_location: Option<OALocation>,
+    is_retracted: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
 struct OAPdf {
     url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OATopic {
+    display_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OALocation {
+    source: Option<OASource>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OASource {
+    display_name: Option<String>,
+    // The works endpoint embeds a reduced source object without these; only
+    // the standalone /sources endpoint returns venue stats, so they usually
+    // stay None here but are kept for forward compatibility.
+    cited_by_count: Option<i64>,
+    works_count: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -693,6 +757,90 @@ mod tests {
         assert_eq!(citations.results.len(), 2);
         assert_eq!(citations.results[0].title, "Citing Paper 1");
         assert_eq!(citations.results[1].title, "Citing Paper 2");
+    }
+
+    #[test]
+    fn test_parse_paper_type_topics_and_venue_metadata() {
+        // Trimmed from a live response: GET /works?search=crispr&per-page=1
+        // ("The Heroes of CRISPR", W2239190724).
+        let fixture = r#"
+        {
+            "id": "https://openalex.org/W2239190724",
+            "title": "The Heroes of CRISPR",
+            "publication_year": 2016,
+            "cited_by_count": 493,
+            "doi": "https://doi.org/10.1016/j.cell.2015.12.041",
+            "type": "review",
+            "is_retracted": false,
+            "authorships": [
+                {"author": {"display_name": "Eric S. Lander"}}
+            ],
+            "topics": [
+                {"display_name": "CRISPR and Genetic Engineering"},
+                {"display_name": "Philosophy and History of Science"}
+            ],
+            "primary_location": {
+                "source": {
+                    "id": "https://openalex.org/S110447773",
+                    "display_name": "Cell"
+                }
+            }
+        }
+        "#;
+
+        let data: OAPaper = serde_json::from_str(fixture).expect("fixture should parse");
+        let paper = OpenAlexSource::parse_paper(&data);
+
+        assert_eq!(paper.paper_type.as_deref(), Some("review"));
+        assert_eq!(
+            paper.categories.as_deref(),
+            Some("CRISPR and Genetic Engineering;Philosophy and History of Science")
+        );
+        let extra = paper.extra.as_ref().expect("venue extras should exist");
+        assert_eq!(extra.get("venue").and_then(|v| v.as_str()), Some("Cell"));
+        // The works endpoint embeds a reduced source object: no venue stats.
+        assert!(extra.get("venue_cited_by").is_none());
+        assert!(extra.get("venue_works").is_none());
+        // Retraction is only reported when a work is actually retracted.
+        assert!(extra.get("is_retracted").is_none());
+
+        // Venue stats and retraction appear when the API reports them.
+        let retracted = r#"
+        {
+            "id": "https://openalex.org/W1",
+            "title": "Retracted Study",
+            "cited_by_count": 3,
+            "type": "article",
+            "is_retracted": true,
+            "authorships": [],
+            "primary_location": {
+                "source": {
+                    "display_name": "PLOS ONE",
+                    "cited_by_count": 12345,
+                    "works_count": 678
+                }
+            }
+        }
+        "#;
+        let data: OAPaper = serde_json::from_str(retracted).expect("fixture should parse");
+        let paper = OpenAlexSource::parse_paper(&data);
+
+        assert_eq!(paper.paper_type.as_deref(), Some("article"));
+        assert!(paper.categories.is_none());
+        let extra = paper.extra.as_ref().expect("venue extras should exist");
+        assert_eq!(
+            extra.get("venue").and_then(|v| v.as_str()),
+            Some("PLOS ONE")
+        );
+        assert_eq!(
+            extra.get("venue_cited_by").and_then(|v| v.as_i64()),
+            Some(12345)
+        );
+        assert_eq!(extra.get("venue_works").and_then(|v| v.as_i64()), Some(678));
+        assert_eq!(
+            extra.get("is_retracted").and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 
     #[test]

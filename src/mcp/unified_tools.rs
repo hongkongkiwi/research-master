@@ -8,7 +8,7 @@ use serde_json::Value;
 use super::tools::ToolHandler;
 
 /// Helper function to auto-detect the appropriate source for a paper ID
-fn auto_detect_source(
+pub(crate) fn auto_detect_source(
     sources: &Arc<Vec<Arc<dyn crate::sources::Source>>>,
     paper_id: &str,
 ) -> Result<Arc<dyn crate::sources::Source>, String> {
@@ -38,6 +38,18 @@ fn auto_detect_source(
             .find(|s| s.id() == "hal")
             .cloned()
             .ok_or_else(|| "HAL source not available".to_string());
+    }
+
+    // ClinicalTrials.gov NCT ids: NCT followed by exactly 8 digits.
+    if paper_id.len() == 11
+        && paper_id_upper_start(paper_id, "NCT")
+        && paper_id[3..].chars().all(|c| c.is_ascii_digit())
+    {
+        return sources
+            .iter()
+            .find(|s| s.id() == "clinical_trials")
+            .cloned()
+            .ok_or_else(|| "ClinicalTrials.gov source not available".to_string());
     }
 
     // DOIs (`10.1234/rest`) contain exactly one slash, the same shape as an
@@ -80,6 +92,20 @@ fn paper_id_upper_start(paper_id: &str, prefix: &str) -> bool {
     paper_id[..prefix.len()].to_uppercase() == prefix
 }
 
+/// Collect a JSON array of strings into a Vec, ignoring non-string entries
+fn string_list_arg(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Debug)]
 pub struct SearchPapersHandler {
     pub sources: Arc<Vec<Arc<dyn crate::sources::Source>>>,
@@ -114,7 +140,14 @@ impl ToolHandler for SearchPapersHandler {
 
         let mut search_query = crate::models::SearchQuery::new(query)
             .max_results(max_results)
-            .license_policy(license_policy);
+            .license_policy(license_policy)
+            .include_types(string_list_arg(args.get("include_types")))
+            .exclude_types(string_list_arg(args.get("exclude_types")))
+            .strict_types(
+                args.get("strict_types")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            );
         if let Some(ref year) = year {
             search_query = search_query.year(year);
         }
@@ -129,6 +162,15 @@ impl ToolHandler for SearchPapersHandler {
             .unwrap_or(false)
         {
             search_query = search_query.filter("fulltext", "true");
+        }
+        // Generic source-specific filters, forwarded as-is; sources ignore
+        // keys they do not support.
+        if let Some(extra) = args.get("filters").and_then(|v| v.as_object()) {
+            for (key, value) in extra {
+                if let Some(value) = value.as_str() {
+                    search_query = search_query.filter(key.clone(), value.to_string());
+                }
+            }
         }
         let search_query = Arc::new(search_query);
 
@@ -185,7 +227,10 @@ impl ToolHandler for SearchPapersHandler {
         if let Err(error) = crate::utils::HistoryService::new().add_search(query, source_filter) {
             tracing::warn!("Could not record search history: {}", error);
         }
-        all_results.retain(|paper| license_policy.allows(paper.license.as_deref()));
+        all_results.retain(|paper| {
+            license_policy.allows(paper.license.as_deref())
+                && search_query.type_filter_allows(paper)
+        });
         // The same paper arrives from several aggregating sources; keep the
         // first occurrence so callers are not flooded with duplicates.
         let all_results =
@@ -1417,9 +1462,11 @@ fn missing_web_search_keys_error() -> String {
 }
 
 fn web_search_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
+    // Env-only proxy config; used by web_search and github_search alike.
+    let proxy = crate::utils::create_proxy_config_from_cli(None, None, None);
+    proxy
+        .apply_to(reqwest::Client::builder())
+        .and_then(|b| b.timeout(std::time::Duration::from_secs(15)).build())
         .map_err(|e| format!("Failed to create HTTP client: {}", e))
 }
 
@@ -1598,10 +1645,14 @@ impl ToolHandler for WebExtractHandler {
             ));
         }
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(20))
-            .user_agent(format!("research-master/{}", env!("CARGO_PKG_VERSION")))
-            .build()
+        let proxy = crate::utils::create_proxy_config_from_cli(None, None, None);
+        let client = proxy
+            .apply_to(
+                reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(20))
+                    .user_agent(format!("research-master/{}", env!("CARGO_PKG_VERSION"))),
+            )
+            .and_then(|b| b.build())
             .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
         let response = client

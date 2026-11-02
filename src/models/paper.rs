@@ -46,6 +46,8 @@ pub enum SourceType {
     Inspire,
     /// NASA Astrophysics Data System
     Ads,
+    /// ClinicalTrials.gov study registry
+    ClinicalTrials,
     #[serde(untagged)]
     Other(String),
 }
@@ -90,6 +92,7 @@ impl SourceType {
             SourceType::DataCite => "DataCite",
             SourceType::Inspire => "INSPIRE-HEP",
             SourceType::Ads => "NASA ADS",
+            SourceType::ClinicalTrials => "ClinicalTrials.gov",
             SourceType::Other(s) => s,
         }
     }
@@ -133,6 +136,7 @@ impl SourceType {
             SourceType::DataCite => "datacite",
             SourceType::Inspire => "inspire",
             SourceType::Ads => "ads",
+            SourceType::ClinicalTrials => "clinical_trials",
             SourceType::Other(s) => s,
         }
     }
@@ -201,6 +205,13 @@ pub struct Paper {
     /// rights reserved". License filtering treats the two differently.
     #[serde(default)]
     pub license: Option<String>,
+
+    /// Publication/study type when the source reports one (e.g. "journal
+    /// article", "review", "meta-analysis", "preprint", "clinical trial").
+    /// `None` means the source did not classify it. Type filtering keeps
+    /// unclassified papers unless strict filtering is requested.
+    #[serde(default)]
+    pub paper_type: Option<String>,
 }
 
 impl Paper {
@@ -223,6 +234,7 @@ impl Paper {
             references: None,
             extra: None,
             license: None,
+            paper_type: None,
         }
     }
 
@@ -356,6 +368,15 @@ impl PaperBuilder {
         let license = license.into();
         if !license.trim().is_empty() {
             self.paper.license = Some(license);
+        }
+        self
+    }
+
+    /// Set the publication/study type reported by the source
+    pub fn paper_type(mut self, paper_type: impl Into<String>) -> Self {
+        let paper_type = paper_type.into();
+        if !paper_type.trim().is_empty() {
+            self.paper.paper_type = Some(paper_type);
         }
         self
     }

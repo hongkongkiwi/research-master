@@ -4,6 +4,8 @@
 //! API documentation: <https://developer.osf.io>
 //!
 //! OSF is free and requires no API key for public data.
+//! A `provider` filter restricts search to one hosted provider, e.g.
+//! PsyArXiv, SocArXiv, engrXiv or EarthArXiv preprints.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -53,14 +55,7 @@ impl Source for OsfSource {
     }
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchResponse, SourceError> {
-        let max_results = query.max_results.min(100);
-
-        let url = format!(
-            "{}?filter[title]={}&page[size]={}",
-            OSF_API_BASE,
-            urlencoding::encode(&query.query),
-            max_results
-        );
+        let url = self.build_search_url(query);
 
         let client = Arc::clone(&self.client);
         let url_for_retry = url.clone();
@@ -226,6 +221,26 @@ impl Source for OsfSource {
 }
 
 impl OsfSource {
+    fn build_search_url(&self, query: &SearchQuery) -> String {
+        // OSF rejects literal '[' and ']' in the query string, so the filter
+        // parameter brackets are percent-encoded.
+        let mut url = format!(
+            "{}?filter%5Btitle%5D={}&page%5Bsize%5D={}",
+            OSF_API_BASE,
+            urlencoding::encode(&query.query),
+            query.max_results.min(100)
+        );
+        // Provider filter: restrict results to one hosted preprint provider
+        // by slug (psyarxiv, socarxiv, engrxiv, eartharxiv, ...).
+        if let Some(provider) = query.filters.get("provider") {
+            url.push_str(&format!(
+                "&filter%5Bprovider%5D={}",
+                urlencoding::encode(provider)
+            ));
+        }
+        url
+    }
+
     fn parse_result(&self, preprint: &OsfPreprint) -> Result<Paper, SourceError> {
         let id = preprint.id.clone();
         let title = preprint.attributes.title.clone().unwrap_or_default();
@@ -257,6 +272,7 @@ impl OsfSource {
             .abstract_text(&abstract_text)
             .doi(&doi)
             .pdf_url(pdf_url.unwrap_or_default())
+            .paper_type("preprint")
             .build())
     }
 }
@@ -288,10 +304,13 @@ struct OsfAttributes {
 
 #[derive(Debug, Deserialize)]
 struct OsfRelationships {
+    // Live responses carry contributors as a link-only relationship with no
+    // inline "authors" data; the default keeps those responses parseable.
+    #[serde(default)]
     authors: OsfAuthors,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct OsfAuthors {
     data: Vec<OsfAuthor>,
 }
@@ -423,5 +442,92 @@ mod tests {
             paper.pdf_url.as_deref(),
             Some("https://osf.io/download/osf-1")
         );
+    }
+
+    #[test]
+    fn test_build_search_url_without_provider() {
+        let source = OsfSource::new().unwrap();
+        let query = SearchQuery::new("memory").max_results(20);
+        let url = source.build_search_url(&query);
+        assert!(url.starts_with("https://api.osf.io/v2/preprints?"));
+        assert!(url.contains("filter%5Btitle%5D=memory"));
+        assert!(url.contains("page%5Bsize%5D=20"));
+        assert!(!url.contains("filter%5Bprovider%5D"));
+    }
+
+    #[test]
+    fn test_build_search_url_with_provider() {
+        let source = OsfSource::new().unwrap();
+        let query = SearchQuery::new("memory")
+            .max_results(20)
+            .filter("provider", "psyarxiv");
+        let url = source.build_search_url(&query);
+        assert!(url.contains("filter%5Btitle%5D=memory&"));
+        assert!(url.contains("&filter%5Bprovider%5D=psyarxiv"));
+    }
+
+    #[test]
+    fn test_build_search_url_provider_value_is_encoded() {
+        let source = OsfSource::new().unwrap();
+        let query = SearchQuery::new("memory").filter("provider", "psy arxiv");
+        let url = source.build_search_url(&query);
+        assert!(url.contains("filter%5Bprovider%5D=psy%20arxiv"));
+    }
+
+    #[test]
+    fn test_parse_result_sets_paper_type_from_live_response() {
+        let source = OsfSource::new().unwrap();
+        // Trimmed from a live response:
+        // GET https://api.osf.io/v2/preprints/?filter%5Bprovider%5D=psyarxiv&page%5Bsize%5D=2
+        let json = r#"{
+            "total_results": null,
+            "data": [{
+                "id": "zy8gv_v2",
+                "attributes": {
+                    "title": "Visual Properties of E-Mobility Devices Shape Their On-Road Vulnerability: Effects of Size and Speed",
+                    "description": "The brief visual window\u2014often only hundreds of milliseconds\u2014in which drivers predict the arrival of oncoming vehicles and decide whether to give way is critical for safe and efficient manoeuvring.",
+                    "doi": null,
+                    "date_created": "2026-11-02T11:33:49.264067",
+                    "date_modified": "2026-11-02T11:37:58.873950"
+                },
+                "relationships": {
+                    "contributors": {
+                        "links": {
+                            "related": {
+                                "href": "https://api.osf.io/v2/preprints/zy8gv_v2/contributors/",
+                                "meta": {}
+                            }
+                        }
+                    },
+                    "provider": {
+                        "links": {
+                            "related": {
+                                "href": "https://api.osf.io/v2/providers/preprints/psyarxiv/",
+                                "meta": {}
+                            }
+                        },
+                        "data": {
+                            "id": "psyarxiv",
+                            "type": "preprint-providers"
+                        }
+                    }
+                },
+                "links": {
+                    "html": "https://osf.io/preprints/psyarxiv/zy8gv_v2/",
+                    "download": null,
+                    "preprint_doi": "https://doi.org/10.31234/osf.io/zy8gv_v2"
+                }
+            }]
+        }"#;
+        let response: OsfResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.data.len(), 1);
+        let paper = source.parse_result(&response.data[0]).unwrap();
+        assert_eq!(paper.paper_type.as_deref(), Some("preprint"));
+        assert_eq!(paper.paper_id, "zy8gv_v2");
+        assert_eq!(paper.source, crate::models::SourceType::Osf);
+        assert_eq!(paper.url, "https://osf.io/preprints/psyarxiv/zy8gv_v2/");
+        assert_eq!(paper.published_date.as_deref(), Some("2026"));
+        // Live responses carry no inline authors data (link-only contributors)
+        assert!(paper.authors.is_empty());
     }
 }

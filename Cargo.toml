@@ -143,6 +143,7 @@ jstor = ["source-jstor"]
 scispace = ["source-scispace"]
 acm = ["source-acm"]
 citeseerx = ["source-citeseerx"]
+clinical_trials = ["source-clinical_trials"]
 medrxiv = ["source-medrxiv"]
 openaire = ["source-openaire"]
 orcid = ["source-orcid"]
@@ -180,6 +181,7 @@ source-jstor = []
 source-scispace = []
 source-acm = []
 source-citeseerx = []
+source-clinical_trials = []
 source-medrxiv = []
 source-openaire = []
 source-orcid = []
@@ -216,6 +218,7 @@ default = [
   "source-jstor",
   "source-acm",
   "source-citeseerx",
+  "source-clinical_trials",
   "source-medrxiv",
   "source-openaire",
   "source-orcid",
@@ -243,6 +246,7 @@ full = ["source-arxiv", "source-pubmed", "source-biorxiv", "source-semantic",
   "source-zenodo", "source-unpaywall", "source-mdpi", "source-jstor",
   "source-scispace", "source-acm", "source-citeseerx", "source-medrxiv",
   "source-openaire", "source-orcid", "source-connected_papers",
+  "source-clinical_trials",
   "source-doaj", "source-worldwidescience", "source-osf",
   "source-base", "source-springer", "source-datacite",
   "source-inspire", "source-ads"]

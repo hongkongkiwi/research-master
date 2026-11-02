@@ -150,6 +150,19 @@ pub struct SearchQuery {
     /// Which results to keep based on the license a source reports
     #[serde(default)]
     pub license_policy: LicensePolicy,
+
+    /// Publication-type tokens results must match (case-insensitive substring
+    /// against `paper_type` and categories). Empty means no include filter.
+    #[serde(default)]
+    pub include_types: Vec<String>,
+
+    /// Publication-type tokens that drop a result; wins over `include_types`
+    #[serde(default)]
+    pub exclude_types: Vec<String>,
+
+    /// Whether papers with no reported type/categories fail `include_types`
+    #[serde(default)]
+    pub strict_types: bool,
 }
 
 impl Default for SearchQuery {
@@ -165,6 +178,9 @@ impl Default for SearchQuery {
             category: None,
             fetch_details: true,
             license_policy: LicensePolicy::Any,
+            include_types: Vec::new(),
+            exclude_types: Vec::new(),
+            strict_types: false,
         }
     }
 }
@@ -230,6 +246,55 @@ impl SearchQuery {
     pub fn license_policy(mut self, policy: LicensePolicy) -> Self {
         self.license_policy = policy;
         self
+    }
+
+    /// Set the publication-type tokens results must match
+    pub fn include_types(mut self, types: Vec<String>) -> Self {
+        self.include_types = types;
+        self
+    }
+
+    /// Set the publication-type tokens results must not match
+    pub fn exclude_types(mut self, types: Vec<String>) -> Self {
+        self.exclude_types = types;
+        self
+    }
+
+    /// Make papers without a reported type/categories fail `include_types`
+    pub fn strict_types(mut self, strict: bool) -> Self {
+        self.strict_types = strict;
+        self
+    }
+
+    /// Whether a paper passes the include/exclude type filters.
+    ///
+    /// Tokens match case-insensitively by substring against the paper's
+    /// reported type and category names. Exclusions always win. Papers with
+    /// neither a type nor categories pass a non-empty include list (lenient
+    /// default) unless `strict_types` is set.
+    pub fn type_filter_allows(&self, paper: &crate::models::Paper) -> bool {
+        let mut texts = Vec::with_capacity(1 + paper.category_list().len());
+        if let Some(paper_type) = paper.paper_type.as_ref() {
+            texts.push(paper_type.as_str());
+        }
+        texts.extend(paper.category_list());
+        let lower: Vec<String> = texts.iter().map(|t| t.to_ascii_lowercase()).collect();
+
+        let matches = |token: &str| {
+            let token = token.to_ascii_lowercase();
+            lower.iter().any(|text| text.contains(&token))
+        };
+
+        if self.exclude_types.iter().any(|token| matches(token)) {
+            return false;
+        }
+        if self.include_types.is_empty() {
+            return true;
+        }
+        if lower.is_empty() {
+            return !self.strict_types;
+        }
+        self.include_types.iter().any(|token| matches(token))
     }
 }
 
@@ -527,7 +592,7 @@ impl ReadResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{Paper, SourceType};
+    use crate::models::{Paper, PaperBuilder, SourceType};
 
     #[test]
     fn test_batch_download_request_new() {
@@ -606,6 +671,82 @@ mod tests {
             assert!(!LicensePolicy::Open.allows(value));
             assert!(LicensePolicy::Ignore.allows(value));
         }
+    }
+
+    #[test]
+    fn type_filter_exclusion_wins_over_inclusion() {
+        let query = SearchQuery::new("crispr")
+            .include_types(vec!["review".to_string()])
+            .exclude_types(vec!["meta-analysis".to_string()]);
+
+        let paper = PaperBuilder::new("1", "Review", "https://example.com", SourceType::OpenAlex)
+            .paper_type("Meta-Analysis of CRISPR Reviews")
+            .build();
+        assert!(!query.type_filter_allows(&paper));
+
+        let clean = PaperBuilder::new("2", "Review", "https://example.com", SourceType::OpenAlex)
+            .paper_type("review")
+            .build();
+        assert!(query.type_filter_allows(&clean));
+
+        // Exclusion applies even with no include list.
+        let exclude_only = SearchQuery::new("crispr").exclude_types(vec!["editorial".to_string()]);
+        let editorial = PaperBuilder::new("3", "Edit", "https://example.com", SourceType::OpenAlex)
+            .paper_type("editorial")
+            .build();
+        assert!(!exclude_only.type_filter_allows(&editorial));
+        assert!(exclude_only.type_filter_allows(&clean));
+    }
+
+    #[test]
+    fn type_filter_is_lenient_for_papers_without_types_by_default() {
+        let query = SearchQuery::new("crispr").include_types(vec!["review".to_string()]);
+        let unclassified =
+            PaperBuilder::new("1", "Paper", "https://example.com", SourceType::OpenAlex).build();
+        assert!(query.type_filter_allows(&unclassified));
+    }
+
+    #[test]
+    fn type_filter_strict_mode_rejects_unclassified_papers() {
+        let query = SearchQuery::new("crispr")
+            .include_types(vec!["review".to_string()])
+            .strict_types(true);
+        let unclassified =
+            PaperBuilder::new("1", "Paper", "https://example.com", SourceType::OpenAlex).build();
+        assert!(!query.type_filter_allows(&unclassified));
+
+        // Strict mode only tightens a non-empty include list.
+        let strict_no_include = SearchQuery::new("crispr").strict_types(true);
+        assert!(strict_no_include.type_filter_allows(&unclassified));
+    }
+
+    #[test]
+    fn type_filter_matches_case_insensitively() {
+        let query = SearchQuery::new("crispr").include_types(vec!["ReVieW".to_string()]);
+        let paper = PaperBuilder::new("1", "Paper", "https://example.com", SourceType::OpenAlex)
+            .paper_type("review article")
+            .build();
+        assert!(query.type_filter_allows(&paper));
+
+        let excluded = SearchQuery::new("crispr").exclude_types(vec!["CLINICAL".to_string()]);
+        let trial = PaperBuilder::new("2", "Paper", "https://example.com", SourceType::OpenAlex)
+            .paper_type("clinical trial")
+            .build();
+        assert!(!excluded.type_filter_allows(&trial));
+    }
+
+    #[test]
+    fn type_filter_matches_category_text() {
+        let query = SearchQuery::new("genomics").include_types(vec!["bioinformatics".to_string()]);
+        let paper = PaperBuilder::new("1", "Paper", "https://example.com", SourceType::OpenAlex)
+            .categories("Bioinformatics; Genomics")
+            .build();
+        assert!(query.type_filter_allows(&paper));
+
+        let other = PaperBuilder::new("2", "Paper", "https://example.com", SourceType::OpenAlex)
+            .categories("Ecology")
+            .build();
+        assert!(!query.type_filter_allows(&other));
     }
 
     #[test]

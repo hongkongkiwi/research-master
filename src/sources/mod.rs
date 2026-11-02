@@ -31,6 +31,7 @@
 //! - `scispace` - Enable SciSpace source (default: enabled)
 //! - `acm` - Enable ACM Digital Library source (default: enabled)
 //! - `citeseerx` - Enable CiteSeerX source (default: enabled)
+//! - `clinical_trials` - Enable ClinicalTrials.gov source (default: enabled)
 //! - `connected_papers` - Enable Connected Papers source (default: enabled)
 //! - `doaj` - Enable DOAJ source (default: enabled)
 //! - `worldwidescience` - Enable WorldWideScience source (default: enabled)
@@ -112,6 +113,8 @@ mod base;
 mod biorxiv;
 #[cfg(feature = "source-citeseerx")]
 mod citeseerx;
+#[cfg(feature = "source-clinical_trials")]
+mod clinical_trials;
 #[cfg(feature = "source-connected_papers")]
 mod connected_papers;
 #[cfg(feature = "source-core-repo")]

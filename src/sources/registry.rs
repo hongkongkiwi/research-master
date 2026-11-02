@@ -19,6 +19,8 @@ use super::base::BaseSource;
 use super::biorxiv::BiorxivSource;
 #[cfg(feature = "source-citeseerx")]
 use super::citeseerx::CiteseerxSource;
+#[cfg(feature = "source-clinical_trials")]
+use super::clinical_trials::ClinicalTrialsSource;
 #[cfg(feature = "source-connected_papers")]
 use super::connected_papers::ConnectedPapersSource;
 #[cfg(feature = "source-core-repo")]
@@ -315,6 +317,9 @@ impl SourceRegistry {
 
         #[cfg(feature = "source-citeseerx")]
         try_register!("citeseerx", CiteseerxSource::new());
+
+        #[cfg(feature = "source-clinical_trials")]
+        try_register!("clinical_trials", ClinicalTrialsSource::new());
 
         #[cfg(feature = "source-connected_papers")]
         try_register!("connected_papers", ConnectedPapersSource::new());
