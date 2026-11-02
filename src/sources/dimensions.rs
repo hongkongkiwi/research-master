@@ -296,7 +296,9 @@ struct DimensionsResponse {
 
 #[derive(Debug, Deserialize)]
 struct DimensionsData {
+    #[serde(default)]
     search: Vec<DimensionsPaper>,
+    #[serde(default)]
     papers: Vec<DimensionsPaper>,
 }
 
@@ -412,6 +414,10 @@ mod tests {
         assert_eq!(response.data.search.len(), 1);
         assert_eq!(response.data.papers.len(), 1);
         assert_eq!(response.data.search[0].concepts[0].name, "Computer science");
+        let search_only = serde_json::json!({"data": {"search": []}});
+        let doi_only = serde_json::json!({"data": {"papers": []}});
+        assert!(serde_json::from_value::<DimensionsResponse>(search_only).is_ok());
+        assert!(serde_json::from_value::<DimensionsResponse>(doi_only).is_ok());
     }
 
     #[test]

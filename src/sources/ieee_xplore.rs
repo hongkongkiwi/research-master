@@ -188,7 +188,16 @@ impl IeeeXploreSource {
             .collect::<Vec<_>>()
             .join("; ");
 
-        let year = item.publication_date.clone().unwrap_or_default();
+        let year = item
+            .publication_date
+            .clone()
+            .or_else(|| {
+                item.publication_year.as_ref().map(|year| match year {
+                    serde_json::Value::String(s) => s.clone(),
+                    value => value.to_string(),
+                })
+            })
+            .unwrap_or_default();
         let url = if !doi.is_empty() {
             format!("https://doi.org/{}", doi)
         } else {
@@ -219,7 +228,23 @@ struct IeeeXploreArticle {
     abstract_text: Option<String>,
     doi: Option<String>,
     publication_date: Option<String>,
+    publication_year: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "deserialize_authors")]
     authors: Vec<IeeeXploreAuthor>,
+}
+
+fn deserialize_authors<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<IeeeXploreAuthor>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Authors {
+        List(Vec<IeeeXploreAuthor>),
+        Wrapped { authors: Vec<IeeeXploreAuthor> },
+    }
+    Ok(match Authors::deserialize(deserializer)? {
+        Authors::List(authors) | Authors::Wrapped { authors } => authors,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -265,8 +290,8 @@ mod tests {
                 "title": "Mock Paper Title",
                 "abstract": "Mock abstract text.",
                 "doi": "10.1234/mock",
-                "publication_date": "2024",
-                "authors": [{"full_name": "Ada Lovelace"}, {"full_name": "Alan Turing"}]
+                "publication_year": 2024,
+                "authors": {"authors": [{"full_name": "Ada Lovelace"}, {"full_name": "Alan Turing"}]}
             }]
         }"#;
         let response: IeeeXploreResponse = serde_json::from_str(json).unwrap();
@@ -284,8 +309,8 @@ mod tests {
                 "title": "Mock Paper Title",
                 "abstract": "Mock abstract text.",
                 "doi": "10.1234/mock",
-                "publication_date": "2024",
-                "authors": [{"full_name": "Ada Lovelace"}, {"full_name": "Alan Turing"}]
+                "publication_year": 2024,
+                "authors": {"authors": [{"full_name": "Ada Lovelace"}, {"full_name": "Alan Turing"}]}
             }]
         }"#;
         let response: IeeeXploreResponse = serde_json::from_str(json).unwrap();

@@ -719,22 +719,21 @@ mod tests {
 
     #[test]
     fn test_live_captured_doi_response_parses() {
-        // Regression guard against the real API shapes; skipped when the
-        // captured fixture is absent so the suite stays reproducible.
-        if let Ok(raw) = std::fs::read_to_string("/tmp/oa-doi.json") {
-            let source = OpenaireSource::new().unwrap();
-            let response: OpenaireResponse =
-                serde_json::from_str(&raw).expect("live OpenAIRE DOI response should deserialize");
-            let item = response
-                .response
-                .results
-                .result
-                .as_slice()
-                .first()
-                .expect("one result");
-            let paper = source.parse_result(item).unwrap();
-            assert_eq!(paper.title, "The Heroes of CRISPR");
-            assert_eq!(paper.doi.as_deref(), Some("10.1016/j.cell.2015.12.041"));
-        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/openaire_doi_response.json");
+        let raw = std::fs::read_to_string(path).expect("OpenAIRE fixture should exist");
+        let source = OpenaireSource::new().unwrap();
+        let response: OpenaireResponse =
+            serde_json::from_str(&raw).expect("live OpenAIRE DOI response should deserialize");
+        let item = response
+            .response
+            .results
+            .result
+            .as_slice()
+            .first()
+            .expect("one result");
+        let paper = source.parse_result(item).unwrap();
+        assert_eq!(paper.title, "The Heroes of CRISPR");
+        assert_eq!(paper.doi.as_deref(), Some("10.1016/j.cell.2015.12.041"));
     }
 }

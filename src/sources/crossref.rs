@@ -29,6 +29,50 @@ impl CrossRefSource {
             client: Arc::new(HttpClient::with_user_agent(&user_agent)?),
         })
     }
+    fn parse_work(item: &serde_json::Value) -> Option<Paper> {
+        let title = item.get("title")?.as_array()?.first()?.as_str()?.trim();
+        if title.is_empty() {
+            return None;
+        }
+        let authors = item
+            .get("author")
+            .and_then(|v| v.as_array())
+            .map(|authors| {
+                authors
+                    .iter()
+                    .map(|author| {
+                        ["given", "family"]
+                            .iter()
+                            .filter_map(|key| author.get(key).and_then(|v| v.as_str()))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .filter(|name| !name.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .unwrap_or_default();
+        let doi = item.get("DOI").and_then(|v| v.as_str()).unwrap_or_default();
+        let url = item.get("URL").and_then(|v| v.as_str()).unwrap_or_default();
+        let year = ["issued", "created"]
+            .iter()
+            .find_map(|key| {
+                item.get(key)
+                    .and_then(|v| v.get("date-parts"))
+                    .and_then(|v| v.get(0))
+                    .and_then(|v| v.get(0))
+                    .and_then(|v| v.as_i64())
+            })
+            .map(|year| year.to_string())
+            .unwrap_or_default();
+        Some(
+            PaperBuilder::new(doi, title, url, SourceType::CrossRef)
+                .authors(authors)
+                .doi(doi)
+                .published_date(year)
+                .build(),
+        )
+    }
 }
 
 impl Default for CrossRefSource {
@@ -80,7 +124,7 @@ impl Source for CrossRefSource {
                     // Handle rate limiting
                     if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
                         tracing::debug!("CrossRef API rate-limited - returning empty results");
-                        return Err(SourceError::Api("CrossRef rate-limited".to_string()));
+                        return Err(SourceError::RateLimit);
                     }
                     return Err(SourceError::Api(format!(
                         "CrossRef API returned status: {}",
@@ -110,10 +154,6 @@ impl Source for CrossRefSource {
         // Handle rate limiting gracefully
         let response = match response {
             Ok(r) => r,
-            Err(SourceError::Api(msg)) if msg.contains("rate-limited") => {
-                tracing::debug!("CrossRef rate-limited - returning empty results");
-                return Ok(SearchResponse::new(vec![], "CrossRef", &query.query));
-            }
             Err(e) => return Err(e),
         };
 
@@ -135,59 +175,8 @@ impl Source for CrossRefSource {
         let papers: Vec<Paper> = data
             .message
             .items
-            .into_iter()
-            .filter_map(|item| {
-                let title = item
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-
-                let authors = item
-                    .get("author")
-                    .and_then(|v| v.as_array())
-                    .map(|authors| {
-                        authors
-                            .iter()
-                            .filter_map(|a| a.get("given").and_then(|g| g.as_str()))
-                            .collect::<Vec<_>>()
-                            .join("; ")
-                    })
-                    .unwrap_or_default();
-
-                let doi = item
-                    .get("doi")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-
-                let url = item
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-
-                let published_date = item
-                    .get("published-print")
-                    .and_then(|v| v.get("date-parts"))
-                    .and_then(|v| v.as_array())
-                    .and_then(|dates| dates.first())
-                    .and_then(|d| d.as_i64())
-                    .map(|y| y.to_string())
-                    .unwrap_or_default();
-
-                if title.is_empty() {
-                    return None;
-                }
-
-                Some(
-                    PaperBuilder::new(doi.clone(), title, url, SourceType::CrossRef)
-                        .authors(&authors)
-                        .doi(&doi)
-                        .published_date(&published_date)
-                        .build(),
-                )
-            })
+            .iter()
+            .filter_map(Self::parse_work)
             .collect();
 
         Ok(SearchResponse::new(papers, "CrossRef", &query.query)
@@ -204,8 +193,17 @@ impl Source for CrossRefSource {
             .await
             .map_err(|e| SourceError::Network(format!("Failed to fetch DOI: {}", e)))?;
 
-        if !response.status().is_success() {
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(SourceError::NotFound("DOI not found".to_string()));
+        }
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(SourceError::RateLimit);
+        }
+        if !response.status().is_success() {
+            return Err(SourceError::Api(format!(
+                "CrossRef API returned status: {}",
+                response.status()
+            )));
         }
 
         // Capture response text for better error messages
@@ -214,7 +212,7 @@ impl Source for CrossRefSource {
             .await
             .unwrap_or_else(|_| "Failed to read response body".to_string());
 
-        let data: CRResponse = serde_json::from_str(&response_text).map_err(|e| {
+        let data: CRWorkResponse = serde_json::from_str(&response_text).map_err(|e| {
             let preview = response_text.chars().take(500).collect::<String>();
             tracing::warn!("CrossRef DOI parse error: {}", preview);
             SourceError::Parse(format!(
@@ -223,58 +221,8 @@ impl Source for CrossRefSource {
             ))
         })?;
 
-        let item = data
-            .message
-            .items
-            .first()
-            .ok_or_else(|| SourceError::NotFound("DOI not found".to_string()))?;
-
-        let title = item
-            .get("title")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-
-        let authors = item
-            .get("author")
-            .and_then(|v| v.as_array())
-            .map(|authors| {
-                authors
-                    .iter()
-                    .filter_map(|a| a.get("given").and_then(|g| g.as_str()))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            })
-            .unwrap_or_default();
-
-        let doi = item
-            .get("doi")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-
-        let url = item
-            .get("url")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-
-        let published_date = item
-            .get("published-print")
-            .and_then(|v| v.get("date-parts"))
-            .and_then(|v| v.as_array())
-            .and_then(|dates| dates.first())
-            .and_then(|d| d.as_i64())
-            .map(|y| y.to_string())
-            .unwrap_or_default();
-
-        Ok(
-            PaperBuilder::new(doi.clone(), title, url, SourceType::CrossRef)
-                .authors(&authors)
-                .doi(&doi)
-                .published_date(&published_date)
-                .build(),
-        )
+        Self::parse_work(&data.message)
+            .ok_or_else(|| SourceError::Parse("CrossRef work has no title".to_string()))
     }
 }
 
@@ -283,6 +231,11 @@ impl Source for CrossRefSource {
 #[derive(Debug, Deserialize)]
 struct CRResponse {
     message: CRMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct CRWorkResponse {
+    message: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -301,6 +254,33 @@ struct CRDate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_real_search_and_single_work_envelopes() {
+        let work = r#"{"DOI":"10.1038/nature12373","URL":"https://doi.org/10.1038/nature12373","title":["Nanometre-scale thermometry in a living cell"],"author":[{"given":"G.","family":"Kucsko"}],"issued":{"date-parts":[[2013,8]]}}"#;
+        let search: CRResponse = serde_json::from_str(&format!(
+            r#"{{"message":{{"total-results":2,"items":[{},{{"title":[]}}]}}}}"#,
+            work
+        ))
+        .unwrap();
+        let papers: Vec<_> = search
+            .message
+            .items
+            .iter()
+            .filter_map(CrossRefSource::parse_work)
+            .collect();
+        assert_eq!(papers.len(), 1);
+        assert_eq!(papers[0].paper_id, "10.1038/nature12373");
+        assert_eq!(papers[0].authors, "G. Kucsko");
+        assert_eq!(papers[0].published_date.as_deref(), Some("2013"));
+        assert_eq!(papers[0].url, "https://doi.org/10.1038/nature12373");
+        let direct: CRWorkResponse =
+            serde_json::from_str(&format!(r#"{{"message":{}}}"#, work)).unwrap();
+        assert_eq!(
+            CrossRefSource::parse_work(&direct.message).unwrap().title,
+            papers[0].title
+        );
+    }
 
     #[test]
     fn test_crossref_source_creation() {

@@ -67,17 +67,35 @@ impl PmcSource {
             ArticleId,
         }
         let mut current_element = Element::None;
+        let mut title_depth = 0usize;
+        let mut abstract_depth = 0usize;
 
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(ref e)) => {
                     // Convert element name to owned String to avoid lifetime issues
                     let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    if title_depth > 0 {
+                        title_depth += 1;
+                        continue;
+                    }
+                    if abstract_depth > 0 {
+                        if tag_name == "p"
+                            && !abstract_text.is_empty()
+                            && !abstract_text.ends_with(char::is_whitespace)
+                        {
+                            abstract_text.push(' ');
+                        }
+                        abstract_depth += 1;
+                        continue;
+                    }
                     match tag_name.as_str() {
                         "article-title" => {
+                            title_depth = 1;
                             current_element = Element::ArticleTitle;
                         }
                         "abstract" => {
+                            abstract_depth = 1;
                             current_element = Element::Abstract;
                         }
                         "contrib" => {
@@ -128,21 +146,22 @@ impl PmcSource {
                     }
                 }
                 Ok(Event::Text(e)) => {
-                    let text = e.unescape().unwrap_or_default().trim().to_string();
+                    let raw = e.unescape().unwrap_or_default();
+                    if matches!(current_element, Element::ArticleTitle) {
+                        title.push_str(&raw);
+                        continue;
+                    }
+                    if matches!(current_element, Element::Abstract) {
+                        abstract_text.push_str(&raw);
+                        continue;
+                    }
+                    let text = raw.trim().to_string();
                     if text.is_empty() {
                         continue;
                     }
 
                     match current_element {
-                        Element::ArticleTitle => {
-                            title = text;
-                        }
-                        Element::Abstract => {
-                            if !abstract_text.is_empty() {
-                                abstract_text.push(' ');
-                            }
-                            abstract_text.push_str(&text);
-                        }
+                        Element::ArticleTitle | Element::Abstract => unreachable!(),
                         Element::Contrib => {
                             if current_surname.is_empty() {
                                 current_surname = text;
@@ -175,6 +194,20 @@ impl PmcSource {
                     }
                 }
                 Ok(Event::End(ref e)) => {
+                    if title_depth > 0 {
+                        title_depth -= 1;
+                        if title_depth == 0 {
+                            current_element = Element::None;
+                        }
+                        continue;
+                    }
+                    if abstract_depth > 0 {
+                        abstract_depth -= 1;
+                        if abstract_depth == 0 {
+                            current_element = Element::None;
+                        }
+                        continue;
+                    }
                     // Convert element name to owned String to avoid lifetime issues
                     let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                     match tag_name.as_str() {
@@ -245,9 +278,9 @@ impl PmcSource {
         let pdf_url = format!("{}/articles/{}/pdf/", PMC_BASE_URL, full_pmcid);
 
         Ok(
-            PaperBuilder::new(full_pmcid.clone(), title, url, SourceType::PMC)
+            PaperBuilder::new(full_pmcid.clone(), title.trim(), url, SourceType::PMC)
                 .authors(authors.join("; "))
-                .abstract_text(abstract_text)
+                .abstract_text(abstract_text.trim())
                 .doi(doi)
                 .published_date(published_date)
                 .categories(journal)
@@ -340,15 +373,25 @@ impl Source for PmcSource {
 
         // Fetch details for each paper
         let mut papers = Vec::new();
+        let mut failures = 0;
         for pmcid in pmcids.iter().take(query.max_results) {
             match self.fetch_paper_details(pmcid).await {
                 Ok(Some(paper)) => papers.push(paper),
-                Ok(None) => {}
+                Ok(None) => {
+                    failures += 1;
+                    tracing::warn!("PMC detail missing for {}", pmcid);
+                }
                 Err(e) => {
-                    // Log error but continue with other papers
-                    eprintln!("Error fetching paper {}: {}", pmcid, e);
+                    failures += 1;
+                    tracing::warn!("Error fetching PMC paper {}: {}", pmcid, e);
                 }
             }
+        }
+        if failures > 0 && papers.is_empty() {
+            return Err(SourceError::Api(format!(
+                "Failed to fetch all {} PMC details",
+                failures
+            )));
         }
 
         Ok(SearchResponse::new(papers, "PMC", &query.query))
@@ -367,10 +410,19 @@ impl Source for PmcSource {
             .await
             .map_err(|e| SourceError::Network(format!("Failed to download PDF: {}", e)))?;
 
-        if !response.status().is_success() {
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(SourceError::NotFound(format!(
                 "Paper not found: {}",
                 full_pmcid
+            )));
+        }
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(SourceError::RateLimit);
+        }
+        if !response.status().is_success() {
+            return Err(SourceError::Api(format!(
+                "PMC download returned status: {}",
+                response.status()
             )));
         }
 
@@ -434,8 +486,14 @@ impl PmcSource {
             .await
             .map_err(|e| SourceError::Network(format!("Failed to fetch paper: {}", e)))?;
 
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(SourceError::RateLimit);
+        }
         if !response.status().is_success() {
-            return Ok(None);
+            return Err(SourceError::Api(format!(
+                "PMC detail returned status: {}",
+                response.status()
+            )));
         }
 
         let xml_content = response
@@ -474,6 +532,19 @@ struct ESearchResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_nested_article_title_and_abstract() {
+        let source = PmcSource::new().unwrap();
+        let xml = "<article><article-title>Gene <italic>editing</italic> works</article-title><abstract><p>First <italic>important</italic> result.</p><p>Second result.</p></abstract></article>";
+        let paper = source.parse_pmc_xml(xml, "123").unwrap();
+        assert_eq!(paper.title, "Gene editing works");
+        assert_eq!(paper.r#abstract, "First important result. Second result.");
+        let xml = "<article><article-title>A <italic>gene</italic>, tested</article-title><abstract><p>One <italic>important</italic> result.</p><p>Next paragraph.</p></abstract></article>";
+        let paper = source.parse_pmc_xml(xml, "123").unwrap();
+        assert_eq!(paper.title, "A gene, tested");
+        assert_eq!(paper.r#abstract, "One important result. Next paragraph.");
+    }
 
     #[test]
     fn test_pmc_source_creation() {

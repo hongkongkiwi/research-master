@@ -140,20 +140,7 @@ impl Source for GoogleScholarSource {
 
 impl GoogleScholarSource {
     fn parse_results(&self, _html: &str, _query: &str) -> Result<Vec<Paper>, SourceError> {
-        // Simple parsing - in practice, you'd want more robust HTML parsing
-        // Google Scholar's HTML structure is complex and changes frequently
-
-        // This is a placeholder that returns no results
-        // In a real implementation, you would use scraper or similar to parse the HTML
-        tracing::warn!("Google Scholar parsing not fully implemented - returning empty results");
-
-        // For a real implementation, you would:
-        // 1. Parse the HTML response
-        // 2. Extract paper titles, authors, venues, citations
-        // 3. Handle pagination
-        // 4. Respect rate limits
-
-        Ok(vec![])
+        Err(SourceError::NotImplemented)
     }
 }
 

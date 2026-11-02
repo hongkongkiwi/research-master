@@ -69,6 +69,9 @@ impl OpenAlexSource {
     /// the polite pool but identifies the caller, so it stays when set.
     fn add_credentials_if_present(&self, url: &str) -> String {
         let mut url = url.to_string();
+        if !url.contains('?') {
+            url.push('?');
+        }
         if let Some(ref key) = self.api_key {
             url = format!("{}&api_key={}", url, urlencoding::encode(key));
         }
@@ -117,10 +120,31 @@ impl OpenAlexSource {
             .as_ref()
             .and_then(|loc| loc.source.as_ref());
 
+        let abstract_text = data
+            .abstract_inverted_index
+            .as_ref()
+            .map(|index| {
+                let mut words: Vec<(usize, &str)> = index
+                    .iter()
+                    .flat_map(|(word, positions)| {
+                        positions
+                            .iter()
+                            .map(move |position| (*position, word.as_str()))
+                    })
+                    .collect();
+                words.sort_unstable_by_key(|(position, _)| *position);
+                words
+                    .into_iter()
+                    .map(|(_, word)| word)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .or_else(|| data.r#abstract.clone())
+            .unwrap_or_default();
         let mut builder =
             PaperBuilder::new(paper_id, data.title.clone(), url, SourceType::OpenAlex)
                 .authors(authors)
-                .abstract_text(data.r#abstract.clone().unwrap_or_default())
+                .abstract_text(abstract_text)
                 .doi(doi)
                 .published_date(published_date.unwrap_or_default())
                 .pdf_url(pdf_url.unwrap_or_default())
@@ -183,9 +207,9 @@ impl Source for OpenAlexSource {
         // instead of the title/abstract search param.
         let mut url = if query.filters.get("fulltext").map(|v| v == "true") == Some(true) {
             format!(
-                "/works?filter=fulltext.search:{}&per-page={}",
-                urlencoding::encode(&query.query),
-                query.max_results
+                "/works?per-page={}&filter=fulltext.search:{}",
+                query.max_results,
+                urlencoding::encode(&query.query)
             )
         } else {
             format!(
@@ -196,19 +220,24 @@ impl Source for OpenAlexSource {
         };
 
         // Add year filter if specified
+        let filter_separator = if url.contains("filter=") {
+            ","
+        } else {
+            "&filter="
+        };
         if let Some(year) = &query.year {
             if let Some(start) = year.strip_suffix('-') {
                 // From year: from_year onwards
-                url = format!("{}&filter=publication_year:{}", url, start);
+                url = format!("{}{}publication_year:{}", url, filter_separator, start);
             } else if let Some(end) = year.strip_prefix('-') {
                 // Until year
-                url = format!("{}&filter=publication_year:|-{}", url, end);
+                url = format!("{}{}publication_year:|-{}", url, filter_separator, end);
             } else if year.contains('-') {
                 // Range
-                url = format!("{}&filter=publication_year:{}", url, year);
+                url = format!("{}{}publication_year:{}", url, filter_separator, year);
             } else if year.len() == 4 {
                 // Single year
-                url = format!("{}&filter=publication_year:{}", url, year);
+                url = format!("{}{}publication_year:{}", url, filter_separator, year);
             }
         }
 
@@ -227,7 +256,10 @@ impl Source for OpenAlexSource {
                     .send()
                     .await
                     .map_err(|e| {
-                        SourceError::Network(format!("Failed to search OpenAlex: {}", e))
+                        SourceError::Network(format!(
+                            "Failed to search OpenAlex: {}",
+                            e.without_url()
+                        ))
                     })?;
 
                 if !response.status().is_success() {
@@ -237,10 +269,9 @@ impl Source for OpenAlexSource {
                     )));
                 }
 
-                response
-                    .json()
-                    .await
-                    .map_err(|e| SourceError::Parse(format!("Failed to parse JSON: {}", e)))
+                response.json().await.map_err(|e| {
+                    SourceError::Parse(format!("Failed to parse JSON: {}", e.without_url()))
+                })
             }
         })
         .await?;
@@ -270,12 +301,19 @@ impl Source for OpenAlexSource {
             .get(&self.build_url(&url))
             .send()
             .await
-            .map_err(|e| SourceError::Network(format!("Failed to search author: {}", e)))?;
+            .map_err(|e| {
+                SourceError::Network(format!("Failed to search author: {}", e.without_url()))
+            })?;
 
-        let author_data: AuthorsResponse = response
-            .json()
-            .await
-            .map_err(|e| SourceError::Parse(format!("Failed to parse JSON: {}", e)))?;
+        if !response.status().is_success() {
+            return Err(SourceError::Api(format!(
+                "OpenAlex API returned status: {}",
+                response.status()
+            )));
+        }
+        let author_data: AuthorsResponse = response.json().await.map_err(|e| {
+            SourceError::Parse(format!("Failed to parse JSON: {}", e.without_url()))
+        })?;
 
         let author_id = author_data
             .results
@@ -284,7 +322,11 @@ impl Source for OpenAlexSource {
             .ok_or_else(|| SourceError::NotFound("Author not found".to_string()))?;
 
         // Get papers by author
-        let mut papers_url = format!("/authors/{}/works?per-page={}", author_id, max_results);
+        let mut papers_url = format!(
+            "/works?per-page={}&filter=authorships.author.id:{}",
+            max_results,
+            urlencoding::encode(&author_id)
+        );
 
         // Add year filter if provided (OpenAlex uses "from_publication_date" and "to_publication_date")
         if let Some(y) = year {
@@ -293,16 +335,16 @@ impl Source for OpenAlexSource {
                 let parts: Vec<&str> = y.split('-').collect();
                 if parts.len() == 2 {
                     if !parts[0].is_empty() {
-                        papers_url.push_str(&format!("&from_publication_date={}-01-01", parts[0]));
+                        papers_url.push_str(&format!(",from_publication_date:{}-01-01", parts[0]));
                     }
                     if !parts[1].is_empty() {
-                        papers_url.push_str(&format!("&to_publication_date={}-12-31", parts[1]));
+                        papers_url.push_str(&format!(",to_publication_date:{}-12-31", parts[1]));
                     }
                 }
             } else if let Ok(year_num) = y.parse::<i32>() {
                 // Single year - use from/to publication date for exact year
                 papers_url.push_str(&format!(
-                    "&from_publication_date={}-01-01&to_publication_date={}-12-31",
+                    ",from_publication_date:{}-01-01,to_publication_date:{}-12-31",
                     year_num, year_num
                 ));
             }
@@ -313,12 +355,22 @@ impl Source for OpenAlexSource {
             .get(&self.build_url(&papers_url))
             .send()
             .await
-            .map_err(|e| SourceError::Network(format!("Failed to fetch author papers: {}", e)))?;
+            .map_err(|e| {
+                SourceError::Network(format!(
+                    "Failed to fetch author papers: {}",
+                    e.without_url()
+                ))
+            })?;
 
-        let papers_data: WorksResponse = papers_response
-            .json()
-            .await
-            .map_err(|e| SourceError::Parse(format!("Failed to parse JSON: {}", e)))?;
+        if !papers_response.status().is_success() {
+            return Err(SourceError::Api(format!(
+                "OpenAlex API returned status: {}",
+                papers_response.status()
+            )));
+        }
+        let papers_data: WorksResponse = papers_response.json().await.map_err(|e| {
+            SourceError::Parse(format!("Failed to parse JSON: {}", e.without_url()))
+        })?;
 
         let papers: Result<Vec<Paper>, SourceError> = papers_data
             .results
@@ -338,7 +390,9 @@ impl Source for OpenAlexSource {
             .get(&self.build_url(&url))
             .send()
             .await
-            .map_err(|e| SourceError::Network(format!("Failed to fetch paper: {}", e)))?;
+            .map_err(|e| {
+                SourceError::Network(format!("Failed to fetch paper: {}", e.without_url()))
+            })?;
 
         if !response.status().is_success() {
             return Err(SourceError::NotFound(format!(
@@ -347,31 +401,26 @@ impl Source for OpenAlexSource {
             )));
         }
 
-        let data: WorkResponse = response
-            .json()
-            .await
-            .map_err(|e| SourceError::Parse(format!("Failed to parse JSON: {}", e)))?;
+        let data: WorkResponse = response.json().await.map_err(|e| {
+            SourceError::Parse(format!("Failed to parse JSON: {}", e.without_url()))
+        })?;
 
         let pdf_url = data
             .best_open_access_pdf
             .and_then(|p| p.url.clone())
             .ok_or_else(|| SourceError::NotFound("No PDF available".to_string()))?;
 
-        let pdf_response = self
-            .client
-            .get(&pdf_url)
-            .send()
-            .await
-            .map_err(|e| SourceError::Network(format!("Failed to download PDF: {}", e)))?;
+        let pdf_response = self.client.get(&pdf_url).send().await.map_err(|e| {
+            SourceError::Network(format!("Failed to download PDF: {}", e.without_url()))
+        })?;
 
         if !pdf_response.status().is_success() {
             return Err(SourceError::NotFound("PDF not available".to_string()));
         }
 
-        let bytes = pdf_response
-            .bytes()
-            .await
-            .map_err(|e| SourceError::Network(format!("Failed to read PDF: {}", e)))?;
+        let bytes = pdf_response.bytes().await.map_err(|e| {
+            SourceError::Network(format!("Failed to read PDF: {}", e.without_url()))
+        })?;
 
         std::fs::create_dir_all(&request.save_path).map_err(|e| {
             SourceError::Io(std::io::Error::other(format!(
@@ -423,12 +472,19 @@ impl Source for OpenAlexSource {
             .get(&self.build_url(&url))
             .send()
             .await
-            .map_err(|e| SourceError::Network(format!("Failed to fetch citations: {}", e)))?;
+            .map_err(|e| {
+                SourceError::Network(format!("Failed to fetch citations: {}", e.without_url()))
+            })?;
 
-        let data: WorksResponse = response
-            .json()
-            .await
-            .map_err(|e| SourceError::Parse(format!("Failed to parse JSON: {}", e)))?;
+        if !response.status().is_success() {
+            return Err(SourceError::Api(format!(
+                "OpenAlex API returned status: {}",
+                response.status()
+            )));
+        }
+        let data: WorksResponse = response.json().await.map_err(|e| {
+            SourceError::Parse(format!("Failed to parse JSON: {}", e.without_url()))
+        })?;
 
         let papers: Result<Vec<Paper>, SourceError> = data
             .results
@@ -444,9 +500,8 @@ impl Source for OpenAlexSource {
         request: &CitationRequest,
     ) -> Result<SearchResponse, SourceError> {
         let url = format!(
-            "/works?filter=referenceds:{}&per-page={}",
-            urlencoding::encode(&request.paper_id),
-            request.max_results
+            "/works/{}?select=referenced_works",
+            urlencoding::encode(&request.paper_id)
         );
 
         let response = self
@@ -454,25 +509,37 @@ impl Source for OpenAlexSource {
             .get(&self.build_url(&url))
             .send()
             .await
-            .map_err(|e| SourceError::Network(format!("Failed to fetch references: {}", e)))?;
+            .map_err(|e| {
+                SourceError::Network(format!("Failed to fetch references: {}", e.without_url()))
+            })?;
 
-        let data: WorksResponse = response
-            .json()
-            .await
-            .map_err(|e| SourceError::Parse(format!("Failed to parse JSON: {}", e)))?;
-
-        let papers: Result<Vec<Paper>, SourceError> = data
-            .results
+        if !response.status().is_success() {
+            return Err(SourceError::Api(format!(
+                "OpenAlex API returned status: {}",
+                response.status()
+            )));
+        }
+        #[derive(Deserialize)]
+        struct References {
+            referenced_works: Vec<String>,
+        }
+        let data: References = response.json().await.map_err(|e| {
+            SourceError::Parse(format!("Failed to parse JSON: {}", e.without_url()))
+        })?;
+        let papers = data
+            .referenced_works
             .into_iter()
-            .map(|p| Ok(Self::parse_paper(&p)))
+            .take(request.max_results)
+            .map(|id| {
+                PaperBuilder::new(id.clone(), String::new(), id, SourceType::OpenAlex).build()
+            })
             .collect();
-
-        Ok(SearchResponse::new(papers?, "OpenAlex", &request.paper_id))
+        Ok(SearchResponse::new(papers, "OpenAlex", &request.paper_id))
     }
 
     async fn get_related(&self, request: &CitationRequest) -> Result<SearchResponse, SourceError> {
         let url = format!(
-            "/works?filter=related:{}&per-page={}",
+            "/works?filter=related_to:{}&per-page={}",
             urlencoding::encode(&request.paper_id),
             request.max_results
         );
@@ -482,12 +549,19 @@ impl Source for OpenAlexSource {
             .get(&self.build_url(&url))
             .send()
             .await
-            .map_err(|e| SourceError::Network(format!("Failed to fetch related: {}", e)))?;
+            .map_err(|e| {
+                SourceError::Network(format!("Failed to fetch related: {}", e.without_url()))
+            })?;
 
-        let data: WorksResponse = response
-            .json()
-            .await
-            .map_err(|e| SourceError::Parse(format!("Failed to parse JSON: {}", e)))?;
+        if !response.status().is_success() {
+            return Err(SourceError::Api(format!(
+                "OpenAlex API returned status: {}",
+                response.status()
+            )));
+        }
+        let data: WorksResponse = response.json().await.map_err(|e| {
+            SourceError::Parse(format!("Failed to parse JSON: {}", e.without_url()))
+        })?;
 
         let papers: Result<Vec<Paper>, SourceError> = data
             .results
@@ -506,16 +580,17 @@ impl Source for OpenAlexSource {
             .get(&self.build_url(&url))
             .send()
             .await
-            .map_err(|e| SourceError::Network(format!("Failed to fetch DOI: {}", e)))?;
+            .map_err(|e| {
+                SourceError::Network(format!("Failed to fetch DOI: {}", e.without_url()))
+            })?;
 
         if !response.status().is_success() {
             return Err(SourceError::NotFound("DOI not found".to_string()));
         }
 
-        let data: WorkResponse = response
-            .json()
-            .await
-            .map_err(|e| SourceError::Parse(format!("Failed to parse JSON: {}", e)))?;
+        let data: WorkResponse = response.json().await.map_err(|e| {
+            SourceError::Parse(format!("Failed to parse JSON: {}", e.without_url()))
+        })?;
 
         Ok(Self::parse_paper(&data))
     }
@@ -528,16 +603,17 @@ impl Source for OpenAlexSource {
             .get(&self.build_url(&url))
             .send()
             .await
-            .map_err(|e| SourceError::Network(format!("Failed to fetch paper: {}", e)))?;
+            .map_err(|e| {
+                SourceError::Network(format!("Failed to fetch paper: {}", e.without_url()))
+            })?;
 
         if !response.status().is_success() {
             return Err(SourceError::NotFound(format!("Paper '{}' not found", id)));
         }
 
-        let data: WorkResponse = response
-            .json()
-            .await
-            .map_err(|e| SourceError::Parse(format!("Failed to parse JSON: {}", e)))?;
+        let data: WorkResponse = response.json().await.map_err(|e| {
+            SourceError::Parse(format!("Failed to parse JSON: {}", e.without_url()))
+        })?;
 
         Ok(Self::parse_paper(&data))
     }
@@ -554,6 +630,7 @@ struct OAPaper {
     cited_by_count: Option<i32>,
     doi: Option<String>,
     r#abstract: Option<String>,
+    abstract_inverted_index: Option<std::collections::HashMap<String, Vec<usize>>>,
     best_open_access_pdf: Option<OAPdf>,
     authorships: Vec<OAAuthorship>,
     /// OpenAlex work type, verbatim ("article", "review", "preprint", ...)
@@ -669,7 +746,7 @@ mod tests {
                     "publication_year": 2023,
                     "cited_by_count": 50,
                     "doi": "https://doi.org/10.1234/cvpr2023",
-                    "abstract": "A comprehensive survey of deep learning techniques.",
+                    "abstract_inverted_index": {"deep": [3], "A": [0], "survey": [2], "learning": [4], "of": [1]},
                     "authorships": [
                         {"author": {"display_name": "Alice Chen"}},
                         {"author": {"display_name": "Bob Smith"}}
@@ -694,6 +771,10 @@ mod tests {
         assert_eq!(paper.publication_year, Some(2023));
         assert_eq!(paper.cited_by_count, Some(50));
         assert_eq!(paper.authorships.len(), 2);
+        assert_eq!(
+            OpenAlexSource::parse_paper(paper).r#abstract,
+            "A of survey deep learning"
+        );
     }
 
     #[test]

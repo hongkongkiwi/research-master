@@ -98,7 +98,7 @@ impl HalSource {
             .unwrap_or_default();
 
         // Domain as category
-        let categories = doc.domain_s.clone().unwrap_or_default();
+        let categories = doc.domain_s.as_deref().unwrap_or_default().join("; ");
 
         // Document type
         let _doc_type = doc.doc_type_s.clone().unwrap_or_default();
@@ -138,7 +138,7 @@ impl Source for HalSource {
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchResponse, SourceError> {
         let mut url = format!(
-            "{}/search?q={}&rows={}&wt=json",
+            "{}/search?q={}&rows={}&wt=json&fl=docid,title_s,authFullName_s,abstract_s,doi_s,doiId_s,uri_s,fileUrl_s,producedDate_s,domain_s,docType_s",
             HAL_API_BASE,
             urlencoding::encode(&query.query),
             query.max_results.min(1000)
@@ -213,19 +213,7 @@ impl Source for HalSource {
         })
         .await;
 
-        // Handle rate limiting gracefully
-        let response = match response {
-            Ok(r) => r,
-            Err(SourceError::Api(msg)) if msg.contains("rate-limited") => {
-                tracing::debug!("HAL rate-limited - returning empty results");
-                return Ok(SearchResponse::new(vec![], "HAL", &query.query));
-            }
-            Err(SourceError::Api(msg)) if msg.contains("server error") => {
-                tracing::debug!("HAL server error - returning empty results");
-                return Ok(SearchResponse::new(vec![], "HAL", &query.query));
-            }
-            Err(e) => return Err(e),
-        };
+        let response = response?;
 
         let data: HALResponse = response
             .json()
@@ -258,10 +246,16 @@ impl Source for HalSource {
             .await
             .map_err(|e| SourceError::Network(format!("Failed to fetch document: {}", e)))?;
 
-        if !response.status().is_success() {
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(SourceError::NotFound(format!(
                 "Document not found: {}",
                 request.paper_id
+            )));
+        }
+        if !response.status().is_success() {
+            return Err(SourceError::Api(format!(
+                "HAL returned {}",
+                response.status()
             )));
         }
 
@@ -288,8 +282,14 @@ impl Source for HalSource {
             .await
             .map_err(|e| SourceError::Network(format!("Failed to download PDF: {}", e)))?;
 
-        if !pdf_response.status().is_success() {
+        if pdf_response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(SourceError::NotFound("PDF not available".to_string()));
+        }
+        if !pdf_response.status().is_success() {
+            return Err(SourceError::Api(format!(
+                "HAL PDF returned {}",
+                pdf_response.status()
+            )));
         }
 
         let bytes = pdf_response
@@ -340,7 +340,7 @@ impl Source for HalSource {
             .to_string();
 
         let url = format!(
-            "{}/search?fq=doi_s:{}&rows=1&wt=json",
+            "{}/search?fq=doi_s:{}&rows=1&wt=json&fl=docid,title_s,authFullName_s,abstract_s,doi_s,doiId_s,uri_s,fileUrl_s,producedDate_s,domain_s,docType_s",
             HAL_API_BASE,
             urlencoding::encode(&clean_doi)
         );
@@ -352,8 +352,14 @@ impl Source for HalSource {
             .await
             .map_err(|e| SourceError::Network(format!("Failed to search DOI: {}", e)))?;
 
-        if !response.status().is_success() {
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(SourceError::NotFound("DOI not found".to_string()));
+        }
+        if !response.status().is_success() {
+            return Err(SourceError::Api(format!(
+                "HAL returned {}",
+                response.status()
+            )));
         }
 
         let data: HALResponse = response
@@ -388,11 +394,11 @@ struct HALResponseInner {
 
 #[derive(Debug, Deserialize)]
 struct HALDoc {
-    #[serde(rename = "docId")]
+    #[serde(rename = "docid")]
     doc_id: Option<String>,
     #[serde(rename = "title_s")]
     title_s: Option<Vec<String>>,
-    #[serde(rename = "authorName_s")]
+    #[serde(rename = "authFullName_s")]
     author_name_s: Option<Vec<String>>,
     #[serde(rename = "abstract_s")]
     abstract_s: Option<Vec<String>>,
@@ -407,7 +413,7 @@ struct HALDoc {
     #[serde(rename = "producedDate_s")]
     produced_date_s: Option<String>,
     #[serde(rename = "domain_s")]
-    domain_s: Option<String>,
+    domain_s: Option<Vec<String>>,
     #[serde(rename = "docType_s")]
     doc_type_s: Option<String>,
 }
@@ -415,6 +421,17 @@ struct HALDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_hal_live_shape() {
+        let response: HALResponse = serde_json::from_str(r#"{"response":{"numFound":1,"docs":[{"docid":"4672710","title_s":["Title"],"authFullName_s":["Polina Muzyukina"],"domain_s":["0.sdv"]}]}}"#).unwrap();
+        let paper = HalSource::new()
+            .unwrap()
+            .parse_doc(&response.response.docs[0])
+            .unwrap();
+        assert_eq!(paper.paper_id, "4672710");
+        assert_eq!(paper.authors, "Polina Muzyukina");
+    }
 
     #[test]
     fn test_hal_source_creation() {

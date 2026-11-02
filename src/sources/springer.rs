@@ -84,11 +84,11 @@ impl Source for SpringerSource {
                 let mut request = client.get(&url);
 
                 if let Some(key) = api_key {
-                    request = request.header("Authorization", format!("Bearer {}", key));
+                    request = request.query(&[("api_key", key)]);
                 }
 
                 let response = request.send().await.map_err(|e| {
-                    SourceError::Network(format!("Failed to search Springer: {}", e))
+                    SourceError::Network(format!("Failed to search Springer: {}", e.without_url()))
                 })?;
 
                 if !response.status().is_success() {
@@ -109,9 +109,9 @@ impl Source for SpringerSource {
         })
         .await?;
 
-        let total = response.total_results.unwrap_or(0);
+        let total = response.total();
         let papers: Result<Vec<Paper>, SourceError> = response
-            .records
+            .into_records()
             .into_iter()
             .map(|record| self.parse_result(&record))
             .collect();
@@ -147,11 +147,14 @@ impl Source for SpringerSource {
                 let mut request = client.get(&url);
 
                 if let Some(key) = api_key {
-                    request = request.header("Authorization", format!("Bearer {}", key));
+                    request = request.query(&[("api_key", key)]);
                 }
 
                 let response = request.send().await.map_err(|e| {
-                    SourceError::Network(format!("Failed to lookup DOI in Springer: {}", e))
+                    SourceError::Network(format!(
+                        "Failed to lookup DOI in Springer: {}",
+                        e.without_url()
+                    ))
                 })?;
 
                 if !response.status().is_success() {
@@ -170,7 +173,7 @@ impl Source for SpringerSource {
         })
         .await?;
 
-        let record = response.records.into_iter().next().ok_or_else(|| {
+        let record = response.into_records().into_iter().next().ok_or_else(|| {
             SourceError::NotFound(format!("Paper not found in Springer: {}", doi))
         })?;
 
@@ -181,8 +184,16 @@ impl Source for SpringerSource {
 impl SpringerSource {
     fn parse_result(&self, record: &SpringerRecord) -> Result<Paper, SourceError> {
         let id = record.doi.clone().unwrap_or_else(|| record.id.clone());
-        let title = record.title.clone().unwrap_or_default();
-        let abstract_text = record.abstract_text.clone().unwrap_or_default();
+        let title = record
+            .title
+            .as_ref()
+            .and_then(SpringerText::text)
+            .unwrap_or_default();
+        let abstract_text = record
+            .abstract_text
+            .as_ref()
+            .and_then(SpringerText::text)
+            .unwrap_or_default();
 
         let doi = record.doi.clone().unwrap_or_default();
 
@@ -197,7 +208,12 @@ impl SpringerSource {
         let url = if !doi.is_empty() {
             format!("https://doi.org/{}", doi)
         } else {
-            record.url.clone().unwrap_or_default()
+            record
+                .url
+                .as_ref()
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string()
         };
 
         Ok(PaperBuilder::new(id, title, url, SourceType::Springer)
@@ -212,26 +228,79 @@ impl SpringerSource {
 /// Springer API response
 #[derive(Debug, Deserialize)]
 struct SpringerResponse {
-    total_results: Option<usize>,
+    #[serde(default)]
+    result: Vec<SpringerResult>,
+    #[serde(default)]
     records: Vec<SpringerRecord>,
+}
+
+impl SpringerResponse {
+    fn total(&self) -> usize {
+        self.result
+            .first()
+            .and_then(|r| r.total.as_ref())
+            .and_then(|v| {
+                v.as_str()
+                    .and_then(|s| s.parse().ok())
+                    .or_else(|| v.as_u64().map(|n| n as usize))
+            })
+            .unwrap_or(0)
+    }
+    fn into_records(self) -> Vec<SpringerRecord> {
+        if self.records.is_empty() {
+            self.result
+                .into_iter()
+                .next()
+                .map(|r| r.records)
+                .unwrap_or_default()
+        } else {
+            self.records
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SpringerResult {
+    total: Option<serde_json::Value>,
+    #[serde(default)]
+    records: Vec<SpringerRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum SpringerText {
+    One(String),
+    Many(Vec<String>),
+}
+impl SpringerText {
+    fn text(&self) -> Option<String> {
+        match self {
+            Self::One(s) => Some(s.clone()),
+            Self::Many(values) => values.first().cloned(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct SpringerRecord {
+    #[serde(default, alias = "identifier")]
     id: String,
     doi: Option<String>,
-    title: Option<String>,
+    title: Option<SpringerText>,
     #[serde(rename = "abstract")]
-    abstract_text: Option<String>,
+    abstract_text: Option<SpringerText>,
+    #[serde(alias = "publicationDate")]
     publication_date: Option<String>,
+    #[serde(default, alias = "creators")]
     authors: Vec<SpringerAuthor>,
-    url: Option<String>,
+    url: Option<serde_json::Value>,
     journal: Option<SpringerJournal>,
 }
 
 #[derive(Debug, Deserialize)]
 struct SpringerAuthor {
+    #[serde(alias = "creator")]
     name: Option<String>,
 }
 
@@ -273,41 +342,39 @@ mod tests {
     #[test]
     fn test_response_parsing_from_mock_json() {
         let json = r#"{
-            "total_results": 1,
-            "records": [{
+            "result": [{"total": "1", "records": [{
                 "id": "springer-1",
                 "doi": "10.1234/mock",
-                "title": "Mock Paper Title",
-                "abstract": "Mock abstract text.",
-                "publication_date": "2024-03-01",
-                "authors": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}],
+                "title": ["Mock Paper Title"],
+                "abstract": ["Mock abstract text."],
+                "publicationDate": "2024-03-01",
+                "creators": [{"creator": "Ada Lovelace"}, {"creator": "Alan Turing"}],
                 "url": "https://link.springer.com/article/mock",
                 "journal": {"title": "Mock Journal"}
-            }]
+            }]}]
         }"#;
         let response: SpringerResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(response.total_results, Some(1));
-        assert_eq!(response.records.len(), 1);
+        assert_eq!(response.total(), 1);
+        assert_eq!(response.result[0].records.len(), 1);
     }
 
     #[test]
     fn test_parse_result_maps_response_fields() {
         let source = SpringerSource::new().unwrap();
         let json = r#"{
-            "total_results": 1,
-            "records": [{
+            "result": [{"total": "1", "records": [{
                 "id": "springer-1",
                 "doi": "10.1234/mock",
-                "title": "Mock Paper Title",
-                "abstract": "Mock abstract text.",
-                "publication_date": "2024-03-01",
-                "authors": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}],
+                "title": ["Mock Paper Title"],
+                "abstract": ["Mock abstract text."],
+                "publicationDate": "2024-03-01",
+                "creators": [{"creator": "Ada Lovelace"}, {"creator": "Alan Turing"}],
                 "url": "https://link.springer.com/article/mock",
                 "journal": {"title": "Mock Journal"}
-            }]
+            }]}]
         }"#;
         let response: SpringerResponse = serde_json::from_str(json).unwrap();
-        let paper = source.parse_result(&response.records[0]).unwrap();
+        let paper = source.parse_result(&response.result[0].records[0]).unwrap();
         assert_eq!(paper.title, "Mock Paper Title");
         assert_eq!(paper.authors, "Ada Lovelace; Alan Turing");
         assert_eq!(paper.r#abstract, "Mock abstract text.");

@@ -193,7 +193,7 @@ impl Source for IacrSource {
             )))
         })?;
 
-        let filename = format!("{}.pdf", request.paper_id);
+        let filename = iacr_filename(&request.paper_id)?;
         let path = std::path::Path::new(&request.save_path).join(&filename);
 
         std::fs::write(&path, bytes.as_ref()).map_err(SourceError::Io)?;
@@ -222,6 +222,11 @@ impl Source for IacrSource {
     }
 }
 
+fn iacr_filename(paper_id: &str) -> Result<String, SourceError> {
+    crate::utils::sanitize_filename(&format!("{}.pdf", paper_id.replace('/', "_")))
+        .map_err(|e| SourceError::InvalidRequest(e.to_string()))
+}
+
 // ===== IACR API Types =====
 
 #[derive(Debug, Deserialize)]
@@ -247,6 +252,12 @@ struct IACRAuthor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_iacr_filename_containment() {
+        assert_eq!(iacr_filename("2023/1234").unwrap(), "2023_1234.pdf");
+        assert!(iacr_filename("../evil").is_err());
+    }
 
     #[test]
     fn test_iacr_source_creation() {

@@ -63,7 +63,9 @@ impl Source for InspireSource {
 
         let body = get_json(&self.client, &url).await?;
         let response: InspireSearch = serde_json::from_str(&body)?;
-        let total = response.hits.total;
+        let total = match response.hits.total {
+            InspireTotal::Number(value) | InspireTotal::Object { value } => value,
+        };
         let papers = response
             .hits
             .hits
@@ -140,7 +142,10 @@ fn parse_hit(hit: &InspireHit) -> Result<Paper, SourceError> {
     let arxiv = meta.arxiv_eprints.iter().find_map(|e| e.value.clone());
     let license = meta.license.iter().find_map(|l| l.license.clone());
 
-    let id = hit.id.clone();
+    let id = match &hit.id {
+        serde_json::Value::String(id) => id.clone(),
+        id => id.to_string(),
+    };
     let url = doi
         .as_ref()
         .map(|d| format!("https://doi.org/{d}"))
@@ -170,13 +175,20 @@ struct InspireSearch {
 
 #[derive(Debug, Deserialize)]
 struct InspireHits {
-    total: usize,
+    total: InspireTotal,
     hits: Vec<InspireHit>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum InspireTotal {
+    Number(usize),
+    Object { value: usize },
+}
+
+#[derive(Debug, Deserialize)]
 struct InspireHit {
-    id: String,
+    id: serde_json::Value,
     metadata: InspireMetadata,
 }
 
@@ -235,7 +247,7 @@ mod tests {
     #[test]
     fn parses_an_inspire_record() {
         let json = r#"{
-            "id": "1234",
+            "id": 1234,
             "metadata": {
                 "titles": [{"title": "Holography Transformer"}],
                 "authors": [{"full_name": "Ada Lovelace"}],
@@ -247,8 +259,17 @@ mod tests {
                 "citation_count": 7
             }
         }"#;
-        let hit: InspireHit = serde_json::from_str(json).unwrap();
-        let paper = parse_hit(&hit).unwrap();
+        let hit: serde_json::Value = serde_json::from_str(json).unwrap();
+        let response: InspireSearch = serde_json::from_value(serde_json::json!({
+            "hits": {"total": {"value": 1}, "hits": [hit]}
+        }))
+        .unwrap();
+        assert!(matches!(
+            response.hits.total,
+            InspireTotal::Object { value: 1 }
+        ));
+        let paper = parse_hit(&response.hits.hits[0]).unwrap();
+        assert_eq!(paper.paper_id, "1234");
         assert_eq!(paper.title, "Holography Transformer");
         assert_eq!(paper.citations, Some(7));
         assert_eq!(

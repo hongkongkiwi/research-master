@@ -90,15 +90,7 @@ impl BiorxivSource {
         })
         .await;
 
-        // Handle rate limiting gracefully
-        let response = match response {
-            Ok(r) => r,
-            Err(SourceError::Api(msg)) if msg.contains("rate-limited") => {
-                tracing::debug!("bioRxiv rate-limited - returning empty results");
-                return Ok(vec![]);
-            }
-            Err(e) => return Err(e),
-        };
+        let response = response?;
 
         let json: ApiResponse = response
             .json()

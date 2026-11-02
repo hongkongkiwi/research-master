@@ -14,6 +14,8 @@ use crate::utils::{
 };
 
 const SEMANTIC_API_BASE: &str = "https://api.semanticscholar.org/graph/v1";
+const PAPER_FIELDS: &str =
+    "title,url,abstract,authors,year,externalIds,openAccessPdf,citationCount,publicationDate,venue";
 
 /// Environment variable for Semantic Scholar rate limit (requests per second)
 const SEMANTIC_SCHOLAR_RATE_LIMIT_ENV: &str = "SEMANTIC_SCHOLAR_RATE_LIMIT";
@@ -91,6 +93,39 @@ impl SemanticScholarSource {
         })
     }
 
+    fn check_status(status: reqwest::StatusCode) -> Result<(), SourceError> {
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            Err(SourceError::RateLimit)
+        } else if !status.is_success() {
+            Err(SourceError::Api(format!(
+                "Semantic Scholar API returned status: {}",
+                status
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn paper_url(id: &str) -> String {
+        format!("/paper/{}?fields={}", urlencoding::encode(id), PAPER_FIELDS)
+    }
+
+    fn search_url(query: &str, limit: usize) -> String {
+        format!(
+            "/paper/search?query={}&limit={}&fields={}",
+            urlencoding::encode(query),
+            limit,
+            PAPER_FIELDS
+        )
+    }
+
+    fn author_papers_url(id: &str, limit: usize) -> String {
+        format!(
+            "/author/{}/papers?limit={}&fields={}",
+            id, limit, PAPER_FIELDS
+        )
+    }
+
     /// Build request URL with optional API key
     fn build_url(&self, endpoint: &str) -> String {
         format!("{}{}", SEMANTIC_API_BASE, endpoint)
@@ -113,6 +148,7 @@ impl SemanticScholarSource {
         let authors = data
             .authors
             .iter()
+            .flatten()
             .filter_map(|a| a.name.as_ref())
             .map(|s| s.as_str())
             .collect::<Vec<_>>()
@@ -144,7 +180,7 @@ impl SemanticScholarSource {
         let paper_id = data
             .paper_id
             .clone()
-            .or(data.corpus_id.clone())
+            .or_else(|| data.corpus_id.map(|id| id.to_string()))
             .unwrap_or_default();
 
         let pdf_url = data
@@ -200,21 +236,15 @@ impl Source for SemanticScholarSource {
     }
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchResponse, SourceError> {
-        let url = format!(
-            "/paper/search?query={}&limit={}",
-            urlencoding::encode(&query.query),
-            query.max_results
-        );
+        let url = Self::search_url(&query.query, query.max_results);
 
         // Check circuit breaker before making request
         if !self.circuit_breaker.can_request() {
             tracing::warn!(
                 "Semantic Scholar: circuit is open (too many failures) - skipping request"
             );
-            return Ok(SearchResponse::new(
-                vec![],
-                "Semantic Scholar",
-                &query.query,
+            return Err(SourceError::Api(
+                "Semantic Scholar circuit is open".to_string(),
             ));
         }
 
@@ -253,9 +283,7 @@ impl Source for SemanticScholarSource {
                         tracing::warn!(
                             "Semantic Scholar API rate-limited - circuit breaker recorded failure"
                         );
-                        return Err(SourceError::Api(
-                            "Semantic Scholar rate-limited".to_string(),
-                        ));
+                        return Err(SourceError::RateLimit);
                     }
                     // Check for service unavailable
                     if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
@@ -277,6 +305,7 @@ impl Source for SemanticScholarSource {
                 circuit_breaker.record_success();
 
                 // Capture response text first for better error messages
+                Self::check_status(response.status())?;
                 let response_text = response
                     .text()
                     .await
@@ -298,29 +327,7 @@ impl Source for SemanticScholarSource {
         })
         .await;
 
-        // Handle rate limiting gracefully
-        let data = match result {
-            Ok(d) => d,
-            Err(SourceError::Api(msg)) if msg.contains("rate-limited") => {
-                tracing::warn!("Semantic Scholar: rate-limited - returning empty results");
-                return Ok(SearchResponse::new(
-                    vec![],
-                    "Semantic Scholar",
-                    &query.query,
-                ));
-            }
-            Err(SourceError::Api(msg))
-                if msg.contains("unavailable") || msg.contains("circuit") =>
-            {
-                tracing::warn!("Semantic Scholar: unavailable - returning empty results");
-                return Ok(SearchResponse::new(
-                    vec![],
-                    "Semantic Scholar",
-                    &query.query,
-                ));
-            }
-            Err(e) => return Err(e),
-        };
+        let data = result?;
 
         let papers: Result<Vec<Paper>, SourceError> = data
             .data
@@ -365,6 +372,7 @@ impl Source for SemanticScholarSource {
                     .await
                     .map_err(|e| SourceError::Network(format!("Failed to search author: {}", e)))?;
 
+                Self::check_status(response.status())?;
                 let response_text = response
                     .text()
                     .await
@@ -389,7 +397,7 @@ impl Source for SemanticScholarSource {
             .ok_or_else(|| SourceError::NotFound("Author not found".to_string()))?;
 
         // Then get papers by that author
-        let mut papers_url = format!("/author/{}/papers?limit={}", author_id, max_results);
+        let mut papers_url = Self::author_papers_url(&author_id, max_results);
 
         // Add year filter if provided
         if let Some(y) = year {
@@ -409,6 +417,7 @@ impl Source for SemanticScholarSource {
                     SourceError::Network(format!("Failed to fetch author papers: {}", e))
                 })?;
 
+                Self::check_status(response.status())?;
                 let response_text = response
                     .text()
                     .await
@@ -437,7 +446,7 @@ impl Source for SemanticScholarSource {
 
     async fn download(&self, request: &DownloadRequest) -> Result<DownloadResult, SourceError> {
         // Try to get the paper first to find PDF URL
-        let url = format!("/paper/{}", urlencoding::encode(&request.paper_id));
+        let url = Self::paper_url(&request.paper_id);
 
         let response = self
             .add_api_key_if_present(self.client.get(&self.build_url(&url)))
@@ -445,13 +454,14 @@ impl Source for SemanticScholarSource {
             .await
             .map_err(|e| SourceError::Network(format!("Failed to fetch paper: {}", e)))?;
 
-        if !response.status().is_success() {
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(SourceError::NotFound(format!(
                 "Paper not found: {}",
                 request.paper_id
             )));
         }
 
+        Self::check_status(response.status())?;
         let response_text = response
             .text()
             .await
@@ -479,9 +489,10 @@ impl Source for SemanticScholarSource {
             .await
             .map_err(|e| SourceError::Network(format!("Failed to download PDF: {}", e)))?;
 
-        if !pdf_response.status().is_success() {
+        if pdf_response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(SourceError::NotFound("PDF not available".to_string()));
         }
+        Self::check_status(pdf_response.status())?;
 
         let bytes = pdf_response
             .bytes()
@@ -539,6 +550,7 @@ impl Source for SemanticScholarSource {
             .await
             .map_err(|e| SourceError::Network(format!("Failed to fetch citations: {}", e)))?;
 
+        Self::check_status(response.status())?;
         let response_text = response
             .text()
             .await
@@ -582,6 +594,7 @@ impl Source for SemanticScholarSource {
             .await
             .map_err(|e| SourceError::Network(format!("Failed to fetch references: {}", e)))?;
 
+        Self::check_status(response.status())?;
         let response_text = response
             .text()
             .await
@@ -622,6 +635,7 @@ impl Source for SemanticScholarSource {
             .await
             .map_err(|e| SourceError::Network(format!("Failed to fetch related: {}", e)))?;
 
+        Self::check_status(response.status())?;
         let response_text = response
             .text()
             .await
@@ -650,40 +664,11 @@ impl Source for SemanticScholarSource {
     }
 
     async fn get_by_doi(&self, doi: &str) -> Result<Paper, SourceError> {
-        // Search by DOI using the search API
-        let url = format!("/paper/search?query={}&limit=1", urlencoding::encode(doi));
-
-        let response = self
-            .add_api_key_if_present(self.client.get(&self.build_url(&url)))
-            .send()
-            .await
-            .map_err(|e| SourceError::Network(format!("Failed to search DOI: {}", e)))?;
-
-        let response_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Failed to read response body".to_string());
-
-        let data: S2SearchResponse = serde_json::from_str(&response_text).map_err(|e| {
-            let preview = response_text.chars().take(500).collect::<String>();
-            tracing::warn!("Semantic Scholar DOI parse error: {}", preview);
-            SourceError::Parse(format!(
-                "Failed to parse JSON: {}. Response: {}",
-                e, preview
-            ))
-        })?;
-
-        data.data
-            .first()
-            .map(Self::parse_paper)
-            .ok_or_else(|| SourceError::NotFound("DOI not found".to_string()))
+        self.get_by_id(&format!("DOI:{}", doi)).await
     }
 
     async fn get_by_id(&self, id: &str) -> Result<Paper, SourceError> {
-        let url = format!(
-            "/paper/{}?fields=title,url,abstract,authors,year,externalIds,openAccessPdf,citationCount,publicationDate,venue",
-            urlencoding::encode(id)
-        );
+        let url = Self::paper_url(id);
 
         let data: PaperResponse = with_retry(api_retry_config(), || {
             let url = url.clone();
@@ -694,10 +679,10 @@ impl Source for SemanticScholarSource {
                     .await
                     .map_err(|e| SourceError::Network(format!("Failed to fetch paper: {}", e)))?;
 
-                if !response.status().is_success() {
+                if response.status() == reqwest::StatusCode::NOT_FOUND {
                     return Err(SourceError::NotFound(format!("Paper not found: {}", id)));
                 }
-
+                Self::check_status(response.status())?;
                 let response_text = response
                     .text()
                     .await
@@ -731,14 +716,13 @@ struct S2Paper {
     #[serde(rename = "paperId")]
     paper_id: Option<String>,
     #[serde(rename = "corpusId")]
-    corpus_id: Option<String>,
+    corpus_id: Option<u64>,
     title: String,
     r#abstract: Option<String>,
     year: Option<i32>,
     #[serde(rename = "citationCount")]
     citation_count: Option<i32>,
-    #[serde(default)]
-    authors: Vec<S2Author>,
+    authors: Option<Vec<S2Author>>,
     doi: Option<String>,
     #[serde(rename = "externalIds")]
     external_ids: Option<HashMap<String, String>>,
@@ -814,12 +798,38 @@ impl<'de> Deserialize<'de> for PaperResponse {
 
 #[derive(Debug, Deserialize)]
 struct CitationsResponse {
-    data: Vec<S2Paper>,
+    data: Vec<CitationPaper>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CitationPaper {
+    #[serde(rename = "citingPaper")]
+    paper: S2Paper,
+}
+
+impl std::ops::Deref for CitationPaper {
+    type Target = S2Paper;
+    fn deref(&self) -> &S2Paper {
+        &self.paper
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct ReferencesResponse {
-    data: Vec<S2Paper>,
+    data: Vec<ReferencePaper>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReferencePaper {
+    #[serde(rename = "citedPaper")]
+    paper: S2Paper,
+}
+
+impl std::ops::Deref for ReferencePaper {
+    type Target = S2Paper;
+    fn deref(&self) -> &S2Paper {
+        &self.paper
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -830,6 +840,31 @@ struct RelatedResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_citation_wrapper_and_null_fields() {
+        let json = r#"{"data":[{"citingPaper":{"paperId":"abc","corpusId":123,"title":"Citing paper","authors":null,"abstract":null,"externalIds":null,"openAccessPdf":null}}]}"#;
+        let response: CitationsResponse = serde_json::from_str(json).unwrap();
+        let paper = SemanticScholarSource::parse_paper(&response.data[0].paper);
+        assert_eq!(paper.paper_id, "abc");
+        assert_eq!(paper.title, "Citing paper");
+        assert!(paper.authors.is_empty());
+    }
+
+    #[test]
+    fn test_paper_request_urls_include_fields() {
+        let urls = [
+            SemanticScholarSource::search_url("gene edit", 5),
+            SemanticScholarSource::author_papers_url("123", 5),
+            SemanticScholarSource::paper_url("DOI:10.1234/test"),
+        ];
+        assert!(urls[0].starts_with("/paper/search?query=gene%20edit&limit=5&"));
+        assert!(urls[1].starts_with("/author/123/papers?limit=5&"));
+        assert!(urls[2].starts_with("/paper/DOI%3A10.1234%2Ftest?"));
+        for url in urls {
+            assert!(url.contains(&format!("fields={}", PAPER_FIELDS)));
+        }
+    }
 
     #[test]
     fn test_semantic_source_creation() {
@@ -869,7 +904,7 @@ mod tests {
             "data": [
                 {
                     "paperId": "paper123",
-                    "corpusId": "12345",
+                    "corpusId": 12345,
                     "title": "Machine Learning for Image Recognition",
                     "abstract": "A novel approach to image recognition using deep learning.",
                     "year": 2023,
@@ -894,7 +929,7 @@ mod tests {
         assert_eq!(paper.paper_id, Some("paper123".to_string()));
         assert_eq!(paper.title, "Machine Learning for Image Recognition");
         assert_eq!(paper.year, Some(2023));
-        assert_eq!(paper.authors.len(), 2);
+        assert_eq!(paper.authors.as_ref().unwrap().len(), 2);
     }
 
     #[test]
@@ -903,7 +938,7 @@ mod tests {
         let mock_response = r#"
         {
             "paperId": "abc123",
-            "corpusId": "67890",
+            "corpusId": 67890,
             "title": "Advances in Natural Language Processing",
             "abstract": "This paper presents new advances in NLP techniques.",
             "year": 2024,
@@ -920,7 +955,7 @@ mod tests {
         assert_eq!(paper.paper_id, Some("abc123".to_string()));
         assert_eq!(paper.title, "Advances in Natural Language Processing");
         assert_eq!(paper.year, Some(2024));
-        assert_eq!(paper.authors.len(), 2);
+        assert_eq!(paper.authors.as_ref().unwrap().len(), 2);
     }
 
     #[test]
@@ -930,18 +965,18 @@ mod tests {
         {
             "data": [
                 {
-                    "paperId": "ref1",
-                    "corpusId": "11111",
+                    "citedPaper": {"paperId": "ref1",
+                    "corpusId": 11111,
                     "title": "Referenced Paper 1",
                     "year": 2022,
-                    "authors": [{"name": "Ref Author"}]
+                    "authors": [{"name": "Ref Author"}]}
                 },
                 {
-                    "paperId": "ref2",
-                    "corpusId": "22222",
+                    "citedPaper": {"paperId": "ref2",
+                    "corpusId": 22222,
                     "title": "Referenced Paper 2",
                     "year": 2021,
-                    "authors": [{"name": "Another Author"}]
+                    "authors": [{"name": "Another Author"}]}
                 }
             ]
         }
@@ -953,7 +988,7 @@ mod tests {
 
         let refs = parse_result.unwrap();
         assert_eq!(refs.data.len(), 2);
-        assert_eq!(refs.data[0].paper_id, Some("ref1".to_string()));
-        assert_eq!(refs.data[1].paper_id, Some("ref2".to_string()));
+        assert_eq!(refs.data[0].paper.paper_id, Some("ref1".to_string()));
+        assert_eq!(refs.data[1].paper.paper_id, Some("ref2".to_string()));
     }
 }

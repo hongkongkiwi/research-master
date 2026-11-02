@@ -369,10 +369,16 @@ impl Source for OrcidSource {
             .await
             .map_err(|e| SourceError::Network(format!("ORCID works fetch failed: {}", e)))?;
 
-        if !works_response.status().is_success() {
+        if works_response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(SourceError::NotFound(format!(
                 "Works not found for ORCID '{}'",
                 orcid
+            )));
+        }
+        if !works_response.status().is_success() {
+            return Err(SourceError::Api(format!(
+                "ORCID works returned {}",
+                works_response.status()
             )));
         }
 

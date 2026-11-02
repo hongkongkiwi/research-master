@@ -566,12 +566,10 @@ impl Source for PubMedSource {
         let xml = match xml {
             Ok(x) => x,
             Err(SourceError::Api(msg)) if msg.contains("rate-limited") => {
-                tracing::debug!("PubMed rate-limited - returning empty results");
-                return Ok(SearchResponse::new(vec![], "PubMed", &query.query));
+                return Err(SourceError::RateLimit);
             }
             Err(SourceError::Api(msg)) if msg.contains("unavailable") => {
-                tracing::debug!("PubMed unavailable - returning empty results");
-                return Ok(SearchResponse::new(vec![], "PubMed", &query.query));
+                return Err(SourceError::Api(msg));
             }
             Err(e) => return Err(e),
         };

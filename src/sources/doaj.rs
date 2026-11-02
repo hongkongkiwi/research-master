@@ -13,7 +13,7 @@ use crate::models::{Paper, PaperBuilder, SearchQuery, SearchResponse, SourceType
 use crate::sources::{Source, SourceCapabilities, SourceError};
 use crate::utils::{api_retry_config, with_retry, HttpClient};
 
-const DOAJ_API_BASE: &str = "https://doaj.org/api/v4/query/articles";
+const DOAJ_API_BASE: &str = "https://doaj.org/api/v4/search/articles";
 
 /// DOAJ research source
 ///
@@ -56,10 +56,10 @@ impl Source for DoajSource {
         let max_results = query.max_results.min(100);
 
         // DOAJ uses Elasticsearch query syntax
-        let search_query = format!("query={}", urlencoding::encode(&query.query));
+        let search_query = urlencoding::encode(&query.query);
 
         let url = format!(
-            "{}?{}&pageSize={}",
+            "{}/{}?pageSize={}",
             DOAJ_API_BASE, search_query, max_results
         );
 
@@ -101,15 +101,7 @@ impl Source for DoajSource {
         })
         .await;
 
-        // Handle API unavailability gracefully
-        let response = match response {
-            Ok(r) => r,
-            Err(SourceError::Api(msg)) if msg.contains("unavailable") => {
-                tracing::debug!("DOAJ API unavailable - returning empty results");
-                return Ok(SearchResponse::new(vec![], "DOAJ", &query.query));
-            }
-            Err(e) => return Err(e),
-        };
+        let response = response?;
 
         let total = response.total_results.unwrap_or(0);
         let papers: Result<Vec<Paper>, SourceError> = response
@@ -131,7 +123,11 @@ impl Source for DoajSource {
             .trim()
             .to_string();
 
-        let url = format!("{}/doi/{}", DOAJ_API_BASE, urlencoding::encode(&clean_doi));
+        let url = format!(
+            "{}/{}?pageSize=1",
+            DOAJ_API_BASE,
+            urlencoding::encode(&format!("bibjson.identifier.id:\"{}\"", clean_doi))
+        );
 
         let client = Arc::clone(&self.client);
         let url_for_retry = url.clone();
@@ -160,7 +156,7 @@ impl Source for DoajSource {
                     )));
                 }
 
-                let json: DoajArticle = response.json().await.map_err(|e| {
+                let json: DoajResponse = response.json().await.map_err(|e| {
                     SourceError::Parse(format!("Failed to parse DOAJ response: {}", e))
                 })?;
 
@@ -169,26 +165,36 @@ impl Source for DoajSource {
         })
         .await?;
 
-        self.parse_result(&response)
+        let article = response
+            .results
+            .first()
+            .ok_or_else(|| SourceError::NotFound(format!("Paper not found in DOAJ: {}", doi)))?;
+        self.parse_result(article)
     }
 }
 
 impl DoajSource {
     fn parse_result(&self, article: &DoajArticle) -> Result<Paper, SourceError> {
         let id = article.id.clone();
-        let title = article.title.clone().unwrap_or_default();
-        let abstract_text = article.abstract_text.clone().unwrap_or_default();
+        let bib = &article.bibjson;
+        let title = bib.title.clone().unwrap_or_default();
+        let abstract_text = bib.abstract_text.clone().unwrap_or_default();
 
-        let doi = article.doi.clone().unwrap_or_default();
+        let doi = bib
+            .identifier
+            .iter()
+            .find(|id| id.kind == "doi")
+            .map(|id| id.id.clone())
+            .unwrap_or_default();
 
-        let authors: String = article
+        let authors: String = bib
             .authors
             .iter()
             .filter_map(|a| a.name.clone())
             .collect::<Vec<_>>()
             .join("; ");
 
-        let year = article.publication_year.clone().unwrap_or_default();
+        let year = bib.publication_year.clone().unwrap_or_default();
         let url = if !doi.is_empty() {
             format!("https://doi.org/{}", doi)
         } else {
@@ -207,21 +213,35 @@ impl DoajSource {
 /// DOAJ API response
 #[derive(Debug, Deserialize)]
 struct DoajResponse {
+    #[serde(rename = "total")]
     total_results: Option<usize>,
     results: Vec<DoajArticle>,
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct DoajArticle {
     id: String,
-    doi: Option<String>,
+    bibjson: DoajBibjson,
+}
+
+#[derive(Debug, Deserialize)]
+struct DoajBibjson {
     title: Option<String>,
     #[serde(rename = "abstract")]
     abstract_text: Option<String>,
+    #[serde(rename = "year")]
     publication_year: Option<String>,
+    #[serde(default, rename = "author")]
     authors: Vec<DoajAuthor>,
-    journal: Option<DoajJournal>,
+    #[serde(default)]
+    identifier: Vec<DoajIdentifier>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DoajIdentifier {
+    #[serde(rename = "type")]
+    kind: String,
+    id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -268,15 +288,16 @@ mod tests {
     #[test]
     fn test_response_parsing_from_mock_json() {
         let json = r#"{
-            "total_results": 1,
+            "total": 1,
             "results": [{
                 "id": "doaj-1",
-                "doi": "10.1234/mock",
-                "title": "Mock Paper Title",
-                "abstract": "Mock abstract text.",
-                "publication_year": "2024",
-                "authors": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}],
-                "journal": {"title": "Mock Journal", "publisher": "Mock Publisher"}
+                "bibjson": {
+                    "identifier": [{"type": "doi", "id": "10.1234/mock"}],
+                    "title": "Mock Paper Title",
+                    "abstract": "Mock abstract text.",
+                    "year": "2024",
+                    "author": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}]
+                }
             }]
         }"#;
         let response: DoajResponse = serde_json::from_str(json).unwrap();
@@ -288,15 +309,16 @@ mod tests {
     fn test_parse_result_maps_response_fields() {
         let source = DoajSource::new().unwrap();
         let json = r#"{
-            "total_results": 1,
+            "total": 1,
             "results": [{
                 "id": "doaj-1",
-                "doi": "10.1234/mock",
-                "title": "Mock Paper Title",
-                "abstract": "Mock abstract text.",
-                "publication_year": "2024",
-                "authors": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}],
-                "journal": {"title": "Mock Journal", "publisher": "Mock Publisher"}
+                "bibjson": {
+                    "identifier": [{"type": "doi", "id": "10.1234/mock"}],
+                    "title": "Mock Paper Title",
+                    "abstract": "Mock abstract text.",
+                    "year": "2024",
+                    "author": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}]
+                }
             }]
         }"#;
         let response: DoajResponse = serde_json::from_str(json).unwrap();

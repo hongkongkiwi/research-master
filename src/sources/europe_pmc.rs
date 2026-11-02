@@ -106,8 +106,7 @@ impl EuropePmcSource {
         let url = result
             .full_text_url
             .as_ref()
-            .and_then(|urls| urls.first())
-            .cloned()
+            .and_then(|urls| urls.full_text_url.iter().find_map(|url| url.url.clone()))
             .unwrap_or_else(|| {
                 if let Some(pmid) = &result.pubmed_id {
                     format!("https://europepmc.org/article/med/{}", pmid)
@@ -127,14 +126,7 @@ impl EuropePmcSource {
             .published_date
             .as_ref()
             .cloned()
-            .or_else(|| {
-                result.journal_info.as_ref().and_then(|ji| {
-                    ji.journal_volume.as_ref().map(|_| {
-                        // Return a placeholder if we only have volume info
-                        "".to_string()
-                    })
-                })
-            })
+            .or_else(|| result.pub_year.clone())
             .unwrap_or_default();
 
         PaperBuilder::new(id, title, url, SourceType::EuropePMC)
@@ -226,12 +218,9 @@ struct SearchResult {
 #[derive(Debug, Deserialize)]
 #[allow(non_snake_case, dead_code)]
 struct SearchRequest {
-    #[allow(dead_code)]
+    #[serde(rename = "queryString")]
     query: String,
-    #[allow(dead_code)]
     resultType: String,
-    #[allow(dead_code)]
-    format: String,
     #[allow(dead_code)]
     pageSize: u32,
 }
@@ -247,28 +236,41 @@ struct ResultList {
 #[derive(Debug, Deserialize)]
 #[allow(non_snake_case, dead_code)]
 struct SearchResultItem {
-    #[serde(default)]
+    #[serde(rename = "pmid")]
     pubmed_id: Option<String>,
-    #[serde(default)]
+    #[serde(rename = "pmcid")]
     pmc_id: Option<String>,
     #[serde(default)]
     doi: Option<String>,
     #[serde(default)]
     title: Option<String>,
-    #[serde(default)]
+    #[serde(rename = "authorString")]
     author_string: Option<String>,
-    #[serde(default)]
+    #[serde(rename = "abstractText")]
     abstract_text: Option<String>,
-    #[serde(default)]
+    #[serde(rename = "firstPublicationDate")]
     published_date: Option<String>,
-    #[serde(default)]
+    #[serde(rename = "pubYear")]
+    pub_year: Option<String>,
+    #[serde(rename = "journalInfo")]
     journal_info: Option<JournalInfo>,
     #[serde(default)]
     external_id: Option<String>,
     #[serde(default)]
     id: Option<String>,
-    #[serde(default)]
-    full_text_url: Option<Vec<String>>,
+    #[serde(rename = "fullTextUrlList")]
+    full_text_url: Option<FullTextUrlList>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FullTextUrlList {
+    #[serde(rename = "fullTextUrl", default)]
+    full_text_url: Vec<FullTextUrl>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FullTextUrl {
+    url: Option<String>,
 }
 
 /// Journal information
@@ -285,6 +287,18 @@ struct JournalInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_real_search_fields() {
+        let json = r#"{"version":"6.9","hitCount":1,"request":{"queryString":"crispr","resultType":"core","pageSize":1},"resultList":{"result":[{"id":"42888301","pmid":"42888301","title":"Synthetic Biology","authorString":"Jiang J, Zhang X.","abstractText":"Abstract.","pubYear":"2027","fullTextUrlList":{"fullTextUrl":[{"availability":"Open access","url":"https://example.org/full"}]}}]}}"#;
+        let response = EuropePmcSource::parse_search_response(json).unwrap();
+        let paper = EuropePmcSource::parse_result(&response.result_list.result[0]);
+        assert_eq!(paper.paper_id, "42888301");
+        assert_eq!(paper.authors, "Jiang J, Zhang X.");
+        assert_eq!(paper.r#abstract, "Abstract.");
+        assert_eq!(paper.published_date.as_deref(), Some("2027"));
+        assert_eq!(paper.url, "https://example.org/full");
+    }
 
     #[test]
     fn test_build_search_url() {

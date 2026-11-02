@@ -114,19 +114,7 @@ impl Source for CoreSource {
         })
         .await;
 
-        // Handle API unavailability and rate limiting gracefully
-        let response = match response {
-            Ok(r) => r,
-            Err(SourceError::Api(msg)) if msg.contains("unavailable") => {
-                tracing::debug!("CORE API unavailable - returning empty results");
-                return Ok(SearchResponse::new(vec![], "CORE", &query.query));
-            }
-            Err(SourceError::Api(msg)) if msg.contains("rate-limited") => {
-                tracing::debug!("CORE rate-limited - returning empty results");
-                return Ok(SearchResponse::new(vec![], "CORE", &query.query));
-            }
-            Err(e) => return Err(e),
-        };
+        let response = response?;
 
         let total = response.total_hits.unwrap_or(0);
         let papers: Result<Vec<Paper>, SourceError> = response
@@ -172,10 +160,16 @@ impl Source for CoreSource {
                     SourceError::Network(format!("Failed to lookup DOI in CORE: {}", e))
                 })?;
 
-                if !response.status().is_success() {
+                if response.status() == reqwest::StatusCode::NOT_FOUND {
                     return Err(SourceError::NotFound(format!(
                         "Paper not found in CORE: {}",
                         doi
+                    )));
+                }
+                if !response.status().is_success() {
+                    return Err(SourceError::Api(format!(
+                        "CORE API returned status: {}",
+                        response.status()
                     )));
                 }
 

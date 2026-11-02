@@ -92,6 +92,9 @@ impl Source for UnpaywallSource {
                     )));
                 }
 
+                if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    return Err(SourceError::RateLimit);
+                }
                 if !response.status().is_success() {
                     let status = response.status();
                     let text = response.text().await.unwrap_or_default();
@@ -123,7 +126,19 @@ impl UnpaywallSource {
         let authors: String = item
             .authors
             .iter()
-            .filter_map(|a| a.name.clone())
+            .filter_map(|a| {
+                let name = [a.given.as_deref(), a.family.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if name.is_empty() {
+                    a.name.clone().or_else(|| a.raw_author_name.clone())
+                } else {
+                    Some(name)
+                }
+            })
             .collect::<Vec<_>>()
             .join("; ");
 
@@ -154,13 +169,17 @@ struct UnpaywallResponse {
     #[serde(rename = "abstract")]
     abstract_text: Option<String>,
     published_date: Option<String>,
+    #[serde(rename = "z_authors", default)]
     authors: Vec<UnpaywallAuthor>,
     best_oa_location: Option<UnpaywallLocation>,
 }
 
 #[derive(Debug, Deserialize)]
 struct UnpaywallAuthor {
+    given: Option<String>,
+    family: Option<String>,
     name: Option<String>,
+    raw_author_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -199,7 +218,7 @@ mod tests {
             "title": "Mock Paper Title",
             "abstract": "Mock abstract text.",
             "published_date": "2024-04-01",
-            "authors": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}],
+            "z_authors": [{"given": "Ada", "family": "Lovelace"}, {"raw_author_name": "Alan Turing"}],
             "best_oa_location": {"url_for_pdf": "https://example.org/mock.pdf"}
         }"#;
         let response: UnpaywallResponse = serde_json::from_str(json).unwrap();
@@ -221,7 +240,7 @@ mod tests {
             "title": "Mock Paper Title",
             "abstract": "Mock abstract text.",
             "published_date": "2024-04-01",
-            "authors": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}],
+            "z_authors": [{"given": "Ada", "family": "Lovelace"}, {"raw_author_name": "Alan Turing"}],
             "best_oa_location": {"url_for_pdf": "https://example.org/mock.pdf"}
         }"#;
         let response: UnpaywallResponse = serde_json::from_str(json).unwrap();
