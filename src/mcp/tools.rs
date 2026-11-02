@@ -765,14 +765,15 @@ impl ToolRegistry {
         });
         self.register(Tool {
             name: "read_paper_section".to_string(),
-            description: "Read one section of a paper's PDF text by index (from get_paper_outline) or exact title. Bounded to max_chars with pagination.".to_string(),
+            description: "Read one section of a paper's PDF text by index (from get_paper_outline) or exact title. Bounded to max_chars; when truncated, pass the returned next_start byte offset as offset to continue.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "paper_id": { "type": "string", "description": "Paper identifier" },
                     "source": { "type": "string", "description": "Override auto-detection and use specific source" },
                     "section": { "description": "0-based section index or exact section title", "type": ["integer", "string"] },
-                    "max_chars": { "type": "integer", "description": "Maximum characters (default 12000)", "default": 12000 }
+                    "max_chars": { "type": "integer", "description": "Maximum characters (default 12000)", "default": 12000 },
+                    "offset": { "type": "integer", "description": "Byte offset into the section to continue from (use next_start from a truncated response)" }
                 },
                 "required": ["paper_id", "section"]
             }),

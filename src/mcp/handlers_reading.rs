@@ -31,24 +31,62 @@ pub struct ReadPaperSectionHandler {
 #[derive(Debug)]
 pub struct GetPaperLatexHandler;
 
-/// Prefer arXiv for reading, falling back to whatever is registered.
-fn find_source(
-    sources: &[Arc<dyn Source>],
+async fn find_source(
+    sources: &Arc<Vec<Arc<dyn Source>>>,
+    paper_id: &str,
     source_override: Option<&str>,
-) -> Result<Arc<dyn Source>, String> {
+) -> Result<(Arc<dyn Source>, String), String> {
     if let Some(id) = source_override {
         return sources
             .iter()
             .find(|s| s.id() == id)
             .cloned()
+            .map(|s| (s, paper_id.to_string()))
             .ok_or_else(|| format!("Source '{}' not found", id));
     }
-    sources
-        .iter()
-        .find(|s| s.id() == "arxiv")
-        .or_else(|| sources.first())
-        .cloned()
-        .ok_or_else(|| "No sources available".to_string())
+    let readable: Arc<Vec<Arc<dyn Source>>> = Arc::new(
+        sources
+            .iter()
+            .filter(|s| s.supports_read() || s.supports_download())
+            .cloned()
+            .collect(),
+    );
+    if paper_id.starts_with("10.") {
+        for source in readable.iter().filter(|s| s.supports_doi_lookup()) {
+            if let Ok(paper) = source.get_by_doi(paper_id).await {
+                return Ok((Arc::clone(source), paper.paper_id));
+            }
+        }
+        return Err(
+            "Could not resolve DOI to a readable source; specify source explicitly".to_string(),
+        );
+    }
+    let source = super::unified_tools::auto_detect_source(&readable, paper_id)?;
+    let id = paper_id
+        .strip_prefix("arXiv:")
+        .or_else(|| paper_id.strip_prefix("arxiv:"))
+        .unwrap_or(paper_id);
+    if source.id() == "arxiv"
+        && !(paper_id.to_ascii_lowercase().starts_with("arxiv:")
+            || id.split_once('.').is_some_and(|(a, b)| {
+                a.len() == 4
+                    && a.bytes().all(|c| c.is_ascii_digit())
+                    && b.split('v')
+                        .next()
+                        .is_some_and(|n| n.len() >= 4 && n.bytes().all(|c| c.is_ascii_digit()))
+            })
+            || id.split_once('/').is_some_and(|(a, b)| {
+                !a.is_empty()
+                    && a.bytes().all(|c| c.is_ascii_alphabetic() || c == b'-')
+                    && b.len() >= 7
+                    && b.bytes().all(|c| c.is_ascii_digit())
+            }))
+    {
+        return Err(
+            "Could not auto-detect a readable source; specify source explicitly".to_string(),
+        );
+    }
+    Ok((source, paper_id.to_string()))
 }
 
 async fn read_paper(source: &Arc<dyn Source>, paper_id: &str) -> Result<String, String> {
@@ -110,20 +148,26 @@ fn select_span<'a>(
         .ok_or_else(|| format!("Section '{value}' not found"))
 }
 
-fn section_response(text: &str, span: &SectionSpan, max_chars: usize) -> Value {
-    let out = crate::utils::sections::read_section(text, span, max_chars);
-    let total_chars = text
-        .get(span.start..span.end)
-        .map(|s| s.chars().count())
-        .unwrap_or(0);
-    let truncated = out.chars().count() < total_chars;
-    let next_start = truncated.then(|| span.start + out.len());
-    serde_json::json!({
+fn section_response(
+    text: &str,
+    span: &SectionSpan,
+    offset: usize,
+    max_chars: usize,
+) -> Result<Value, String> {
+    let section = &text[span.start..span.end];
+    let remaining = section
+        .get(offset..)
+        .ok_or("offset must be a byte boundary within the section")?;
+    let out: String = remaining.chars().take(max_chars).collect();
+    let next = offset + out.len();
+    let truncated = next < section.len();
+    Ok(serde_json::json!({
         "title": span.title,
         "text": out,
         "truncated": truncated,
-        "next_start": next_start,
-    })
+        "next_start": truncated.then_some(next),
+        "offset_units": "bytes",
+    }))
 }
 
 #[async_trait::async_trait]
@@ -134,8 +178,8 @@ impl ToolHandler for GetPaperOutlineHandler {
             .and_then(|v| v.as_str())
             .ok_or("Missing 'paper_id' parameter")?;
         let source_override = args.get("source").and_then(|v| v.as_str());
-        let source = find_source(&self.sources, source_override)?;
-        let text = read_paper(&source, paper_id).await?;
+        let (source, resolved_id) = find_source(&self.sources, paper_id, source_override).await?;
+        let text = read_paper(&source, &resolved_id).await?;
         Ok(outline_response(&text))
     }
 }
@@ -153,11 +197,21 @@ impl ToolHandler for ReadPaperSectionHandler {
             .and_then(|v| v.as_u64())
             .unwrap_or(DEFAULT_SECTION_MAX_CHARS) as usize;
         let source_override = args.get("source").and_then(|v| v.as_str());
-        let source = find_source(&self.sources, source_override)?;
-        let text = read_paper(&source, paper_id).await?;
+        let (source, resolved_id) = find_source(&self.sources, paper_id, source_override).await?;
+        let text = read_paper(&source, &resolved_id).await?;
         let outline = crate::utils::sections::outline(&text);
         let span = select_span(&outline, section)?;
-        Ok(section_response(&text, span, max_chars))
+        let offset = match args.get("offset") {
+            None => 0,
+            Some(value) => value
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or("'offset' must be a non-negative integer")?,
+        };
+        if max_chars == 0 {
+            return Err("'max_chars' must be greater than zero".to_string());
+        }
+        section_response(&text, span, offset, max_chars)
     }
 }
 
@@ -226,18 +280,38 @@ mod tests {
         let outline = crate::utils::sections::outline(&text);
         let span = select_span(&outline, &serde_json::json!("1 Introduction")).expect("span");
 
-        let truncated_value = section_response(&text, span, 10);
+        let truncated_value = section_response(&text, span, 0, 10).unwrap();
         assert_eq!(truncated_value["truncated"], true);
         let out = truncated_value["text"].as_str().expect("text");
         assert_eq!(out.chars().count(), 10);
         assert_eq!(
             truncated_value["next_start"].as_u64().expect("next_start") as usize,
-            span.start + out.len()
+            out.len()
         );
 
-        let full = section_response(&text, span, 10_000);
+        let full = section_response(&text, span, 0, 10_000).unwrap();
         assert_eq!(full["truncated"], false);
         assert!(full["next_start"].is_null());
+    }
+
+    #[test]
+    fn section_byte_offsets_continue_multibyte_text() {
+        let text = "prefixéλx";
+        let span = SectionSpan {
+            title: "test".into(),
+            start: 6,
+            end: text.len(),
+        };
+        let first = section_response(text, &span, 0, 1).unwrap();
+        assert_eq!(first["text"], "é");
+        assert_eq!(first["next_start"], 2);
+        let second = section_response(text, &span, 2, 1).unwrap();
+        assert_eq!(second["text"], "λ");
+        assert_eq!(second["next_start"], 4);
+        let last = section_response(text, &span, 4, 1).unwrap();
+        assert_eq!(last["text"], "x");
+        assert_eq!(last["truncated"], false);
+        assert!(section_response(text, &span, 1, 1).is_err());
     }
 
     #[tokio::test]

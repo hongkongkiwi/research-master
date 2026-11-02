@@ -5,7 +5,9 @@ use serde_json::{json, Value};
 use super::tools::ToolHandler;
 use crate::models::{Paper, SourceType};
 use crate::utils::evidence::{check_retraction, check_retraction_from, RetractionInfo};
-use crate::utils::library::{AddedOrUpdated, PaperLibrary};
+use crate::utils::library::{
+    AddedOrUpdated, PaperLibrary, RetractionWrite, RetractionWriteOutcome,
+};
 use crate::utils::HttpClient;
 
 fn collection_of(args: &Value) -> Option<String> {
@@ -149,9 +151,10 @@ impl ToolHandler for LibraryAddHandler {
 
         // Best-effort retraction check on the DOI; a failed lookup records
         // "unknown" and never fails the add.
-        let mut retraction_status: Option<&'static str> = None;
+        let mut retraction_status: Option<String> = None;
         let mut retraction_date: Option<String> = None;
         let mut checked_at: Option<String> = None;
+        let mut retraction_status_persisted = None;
         if let Some(doi) = paper
             .doi
             .as_deref()
@@ -175,16 +178,30 @@ impl ToolHandler for LibraryAddHandler {
                 paper.paper_id.as_str()
             };
             let at = chrono::Utc::now().to_rfc3339();
-            let _ = library.set_retraction(
+            let write = if found_status == "unknown" {
+                RetractionWrite::PreserveConfirmedOnFailure
+            } else {
+                RetractionWrite::Overwrite(found_status.to_string(), date)
+            };
+            match library.set_retraction_scoped(
                 id,
                 collection.as_deref(),
-                found_status,
-                date.as_deref(),
-                &at,
-            );
-            retraction_status = Some(found_status);
-            retraction_date = date;
-            checked_at = Some(at);
+                Some(doi),
+                write,
+                at.clone(),
+            ) {
+                Ok(RetractionWriteOutcome::Applied { status, date }) => {
+                    retraction_status = Some(status);
+                    retraction_date = date;
+                    checked_at = Some(at);
+                    retraction_status_persisted = Some(true);
+                }
+                Ok(_) => retraction_status_persisted = Some(false),
+                Err(e) => {
+                    tracing::warn!("library retraction write failed: {e}");
+                    retraction_status_persisted = Some(false);
+                }
+            }
         }
 
         Ok(json!({
@@ -197,6 +214,7 @@ impl ToolHandler for LibraryAddHandler {
             "retraction_status": retraction_status,
             "retraction_date": retraction_date,
             "retraction_checked_at": checked_at,
+            "retraction_status_persisted": retraction_status_persisted,
         }))
     }
 }

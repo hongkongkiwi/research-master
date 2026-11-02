@@ -67,6 +67,7 @@ fn candidates_from_papers(papers: &Value) -> Result<Vec<Value>, String> {
         .as_array()
         .ok_or("'papers' must be an array of paper objects")?;
     let mut candidates = Vec::with_capacity(entries.len());
+    let mut seen = std::collections::HashSet::new();
     for (i, entry) in entries.iter().enumerate() {
         let has_id = entry
             .get("paper_id")
@@ -81,7 +82,9 @@ fn candidates_from_papers(papers: &Value) -> Result<Vec<Value>, String> {
                 "papers[{i}] must be an object with non-empty 'paper_id' and 'title' strings"
             ));
         }
-        candidates.push(entry.clone());
+        if seen.insert(entry["paper_id"].as_str().unwrap()) {
+            candidates.push(entry.clone());
+        }
     }
     Ok(candidates)
 }
@@ -92,7 +95,7 @@ async fn search_candidates(
     sources: &[Arc<dyn crate::sources::Source>],
     query: &str,
     max_results: usize,
-) -> Result<(Vec<Value>, usize), String> {
+) -> Result<(Vec<Value>, usize, Vec<Value>), String> {
     let search_query = Arc::new(crate::models::SearchQuery::new(query).max_results(max_results));
     let futures: Vec<_> = sources
         .iter()
@@ -114,7 +117,7 @@ async fn search_candidates(
                     }
                     Err(e) => {
                         tracing::warn!("Screening search failed for {}: {}", source.id(), e);
-                        Err(e)
+                        Err((source.id().to_string(), e.to_string()))
                     }
                 }
             }
@@ -126,13 +129,16 @@ async fn search_candidates(
     for result in results {
         match result {
             Ok(found) => papers.extend(found),
-            Err(e) => failures.push(e.to_string()),
+            Err((id, error)) => failures.push(json!({"source": id, "error": error})),
         }
     }
     // Empty with failures is not the same as "no results": surface the
     // distinction or callers cannot tell a silent outage from a miss.
     if papers.is_empty() && !failures.is_empty() {
-        return Err(format!("All sources failed: {}", failures.join("; ")));
+        return Err(format!(
+            "All sources failed: {}",
+            serde_json::to_string(&failures).unwrap_or_default()
+        ));
     }
     if let Err(error) = crate::utils::HistoryService::new().add_search(query, None) {
         tracing::warn!("Could not record search history: {}", error);
@@ -146,7 +152,7 @@ async fn search_candidates(
             serde_json::to_value(&paper).map_err(|e| format!("cannot serialize candidate: {e}"))?;
         candidates.push(value);
     }
-    Ok((candidates, duplicates_removed))
+    Ok((candidates, duplicates_removed, failures))
 }
 
 /// Start a screening session from a source query or an explicit candidate list.
@@ -165,7 +171,7 @@ impl ToolHandler for ScreeningStartHandler {
             .to_string();
         let query_arg = non_empty_str(&args, "query");
         let papers_arg = args.get("papers");
-        let (candidates, duplicates_removed, query) = match (query_arg, papers_arg) {
+        let (candidates, duplicates_removed, query, failures) = match (query_arg, papers_arg) {
             (Some(_), Some(_)) => {
                 return Err("Provide either 'query' or 'papers', not both".to_string());
             }
@@ -176,11 +182,15 @@ impl ToolHandler for ScreeningStartHandler {
             }
             (Some(query), None) => {
                 let max_results = max_results_of(&args);
-                let (candidates, duplicates_removed) =
+                let (candidates, duplicates_removed, failures) =
                     search_candidates(&self.sources, query, max_results).await?;
-                (candidates, duplicates_removed, query.to_string())
+                (candidates, duplicates_removed, query.to_string(), failures)
             }
-            (None, Some(papers)) => (candidates_from_papers(papers)?, 0, String::new()),
+            (None, Some(papers)) => {
+                let candidates = candidates_from_papers(papers)?;
+                let duplicates = papers.as_array().unwrap().len() - candidates.len();
+                (candidates, duplicates, String::new(), Vec::new())
+            }
         };
         if candidates.is_empty() {
             return Err(
@@ -212,6 +222,7 @@ impl ToolHandler for ScreeningStartHandler {
             "duplicates_removed": summary.duplicates_removed,
             "to_screen": summary.remaining,
             "first_batch": first_batch,
+            "source_failures": failures,
         }))
     }
 }
@@ -429,6 +440,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(after["remaining"], 1);
+    }
+
+    #[tokio::test]
+    async fn explicit_duplicates_are_removed_first_wins() {
+        let _guard = scoped_screening_path("duplicates").await;
+        let result = ScreeningStartHandler {
+            sources: empty_sources(),
+        }
+        .execute(
+            json!({"inclusion_criteria":"a", "exclusion_criteria":"b", "papers":[
+                {"paper_id":"p", "title":"First"}, {"paper_id":"p", "title":"Second"}
+            ]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["duplicates_removed"], 1);
+        assert_eq!(result["to_screen"], 1);
+        assert_eq!(result["first_batch"][0]["title"], "First");
     }
 
     #[tokio::test]

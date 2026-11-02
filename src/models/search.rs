@@ -285,16 +285,28 @@ impl SearchQuery {
             lower.iter().any(|text| text.contains(&token))
         };
 
-        if self.exclude_types.iter().any(|token| matches(token)) {
+        if self
+            .exclude_types
+            .iter()
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+            .any(matches)
+        {
             return false;
         }
-        if self.include_types.is_empty() {
+        let includes: Vec<&str> = self
+            .include_types
+            .iter()
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+            .collect();
+        if includes.is_empty() {
             return true;
         }
         if lower.is_empty() {
             return !self.strict_types;
         }
-        self.include_types.iter().any(|token| matches(token))
+        includes.iter().any(|token| matches(token))
     }
 }
 
@@ -733,6 +745,29 @@ mod tests {
             .paper_type("clinical trial")
             .build();
         assert!(!excluded.type_filter_allows(&trial));
+    }
+
+    #[test]
+    fn type_filter_ignores_blank_and_trims_tokens() {
+        let paper = PaperBuilder::new("1", "Paper", "https://example.com", SourceType::OpenAlex)
+            .paper_type("review article")
+            .build();
+        let unclassified =
+            PaperBuilder::new("2", "Paper", "https://example.com", SourceType::OpenAlex).build();
+        assert!(SearchQuery::new("q")
+            .exclude_types(vec!["".into()])
+            .type_filter_allows(&paper));
+        let blank = SearchQuery::new("q")
+            .include_types(vec!["".into(), "  ".into()])
+            .strict_types(true);
+        assert!(blank.type_filter_allows(&paper));
+        assert!(blank.type_filter_allows(&unclassified));
+        assert!(SearchQuery::new("q")
+            .include_types(vec![" ".into(), " review ".into()])
+            .type_filter_allows(&paper));
+        assert!(!SearchQuery::new("q")
+            .exclude_types(vec![" ".into(), " review ".into()])
+            .type_filter_allows(&paper));
     }
 
     #[test]

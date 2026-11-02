@@ -186,9 +186,27 @@ fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
         .map(|(_, value)| value.trim())
 }
 
+fn loopback_origin(origin: &str) -> bool {
+    reqwest::Url::parse(origin).ok().is_some_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && matches!(url.host_str(), Some("127.0.0.1" | "[::1]" | "localhost"))
+            && url.username().is_empty()
+            && url.password().is_none()
+    })
+}
+
 fn authorized(head: &str, auth_token: &Option<String>) -> bool {
     match auth_token {
-        None => true,
+        // Tokenless requests must target loopback and cannot originate from remote sites.
+        None => {
+            header_value(head, "host").is_some_and(|host| {
+                reqwest::Url::parse(&format!("http://{host}"))
+                    .ok()
+                    .is_some_and(|url| {
+                        matches!(url.host_str(), Some("127.0.0.1" | "[::1]" | "localhost"))
+                    })
+            }) && header_value(head, "origin").is_none_or(loopback_origin)
+        }
         Some(expected) => header_value(head, "authorization").is_some_and(|value| {
             value == format!("Bearer {expected}") || value == format!("bearer {expected}")
         }),
@@ -313,16 +331,30 @@ async fn handle_connection(
         return;
     }
 
+    // Tokenless CORS reflects only a validated loopback origin.
+    let cors = if auth_token.is_some() {
+        Some("*".to_string())
+    } else {
+        header_value(&head, "origin")
+            .filter(|origin| loopback_origin(origin))
+            .map(str::to_string)
+    };
     match (method.as_str(), path.as_str()) {
-        ("GET", "/sse") => handle_sse_session(stream, tools, sessions).await,
+        ("GET", "/sse") => handle_sse_session(stream, tools, sessions, cors.as_deref()).await,
         ("POST", "/messages") => {
             handle_message_post(stream, &head, leftover, query.as_deref(), sessions).await
         }
         ("OPTIONS", _) => {
-            let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\n\
+            let origin_header = cors
+                .as_ref()
+                .map(|origin| format!("Access-Control-Allow-Origin: {origin}\r\n"))
+                .unwrap_or_default();
+            let response = format!(
+                "HTTP/1.1 204 No Content\r\n{origin_header}\
                  Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
                  Access-Control-Allow-Headers: Authorization, Content-Type\r\n\
-                 Content-Length: 0\r\nConnection: close\r\n\r\n";
+                 Content-Length: 0\r\nConnection: close\r\n\r\n"
+            );
             let _ = stream.write_all(response.as_bytes()).await;
             let _ = stream.shutdown().await;
         }
@@ -333,7 +365,12 @@ async fn handle_connection(
 }
 
 /// Serve one session: SSE stream out, POST /messages in.
-async fn handle_sse_session(mut stream: TcpStream, tools: ToolRegistry, sessions: Sessions) {
+async fn handle_sse_session(
+    mut stream: TcpStream,
+    tools: ToolRegistry,
+    sessions: Sessions,
+    cors: Option<&str>,
+) {
     let session_id = new_session_id();
     let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
     let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
@@ -362,12 +399,17 @@ async fn handle_sse_session(mut stream: TcpStream, tools: ToolRegistry, sessions
         let _ = server.run(transport).await;
     });
 
-    if sessions
-        .lock()
-        .expect("session mutex not poisoned")
-        .insert(session_id.clone(), inbound_tx)
-        .is_some()
-    {
+    let collision = {
+        let mut sessions = sessions.lock().expect("session mutex not poisoned");
+        match sessions.entry(session_id.clone()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(inbound_tx);
+                false
+            }
+            std::collections::hash_map::Entry::Occupied(_) => true,
+        }
+    };
+    if collision {
         // Collision of a nanosecond-plus-counter id is not reachable in
         // practice, but never overwrite a live session if it were.
         server_task.abort();
@@ -382,8 +424,13 @@ async fn handle_sse_session(mut stream: TcpStream, tools: ToolRegistry, sessions
     }
 
     // SSE response head; the connection stays open for the session lifetime.
-    let sse_headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-         Cache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
+    let origin_header = cors
+        .map(|origin| format!("Access-Control-Allow-Origin: {origin}\r\n"))
+        .unwrap_or_default();
+    let sse_headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+         Cache-Control: no-cache\r\n{origin_header}\r\n"
+    );
     if stream.write_all(sse_headers.as_bytes()).await.is_err() {
         sessions
             .lock()

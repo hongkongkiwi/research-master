@@ -66,6 +66,22 @@ pub(crate) fn auto_detect_source(
         }
     }
 
+    if let Some((archive, number)) = paper_id.split_once('/') {
+        if !archive.is_empty()
+            && archive
+                .split('-')
+                .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphabetic()))
+            && number.len() >= 7
+            && number.bytes().all(|b| b.is_ascii_digit())
+        {
+            return sources
+                .iter()
+                .find(|s| s.id() == "arxiv")
+                .cloned()
+                .ok_or_else(|| "arXiv source not available".to_string());
+        }
+    }
+
     if paper_id.chars().filter(|&c| c == '/').count() == 1 {
         return sources
             .iter()
@@ -86,10 +102,9 @@ pub(crate) fn auto_detect_source(
 }
 
 fn paper_id_upper_start(paper_id: &str, prefix: &str) -> bool {
-    if paper_id.len() < prefix.len() {
-        return false;
-    }
-    paper_id[..prefix.len()].to_uppercase() == prefix
+    paper_id
+        .get(..prefix.len())
+        .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
 }
 
 /// Collect a JSON array of strings into a Vec, ignoring non-string entries
@@ -131,6 +146,11 @@ impl ToolHandler for SearchPapersHandler {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let source_filter = args.get("source").and_then(|v| v.as_str());
+        if let Some(filter) = source_filter {
+            if !self.sources.iter().any(|s| s.id() == filter) {
+                return Err(format!("Source '{}' not found", filter));
+            }
+        }
         let license_policy = match args.get("license").and_then(|v| v.as_str()) {
             Some(value) => crate::models::LicensePolicy::parse(value).ok_or_else(|| {
                 format!("Unknown license policy '{value}'. Use any, open, or ignore.")
@@ -191,6 +211,9 @@ impl ToolHandler for SearchPapersHandler {
                 async move {
                     let cache =
                         crate::utils::CacheService::from_config(crate::config::get_config().cache);
+                    if let Err(error) = cache.initialize() {
+                        tracing::warn!("Could not initialize cache: {}", error);
+                    }
                     if let crate::utils::CacheResult::Hit(response) =
                         cache.get_search(&sq, source.id())
                     {
@@ -235,6 +258,9 @@ impl ToolHandler for SearchPapersHandler {
         // first occurrence so callers are not flooded with duplicates.
         let all_results =
             crate::utils::deduplicate_papers(all_results, crate::utils::DuplicateStrategy::First);
+        if all_results.is_empty() && !failures.is_empty() {
+            return Ok(serde_json::json!({"results": [], "source_failures": failures}));
+        }
         serde_json::to_value(all_results).map_err(|e| e.to_string())
     }
 }
@@ -255,8 +281,12 @@ impl ToolHandler for SearchByAuthorHandler {
             .get("max_results")
             .and_then(|v| v.as_u64())
             .unwrap_or(10) as usize;
-        let year = args.get("year").and_then(|v| v.as_str());
         let source_filter = args.get("source").and_then(|v| v.as_str());
+        if let Some(filter) = source_filter {
+            if !self.sources.iter().any(|s| s.id() == filter) {
+                return Err(format!("Source '{}' not found", filter));
+            }
+        }
 
         let futures: Vec<_> = self
             .sources
@@ -273,7 +303,7 @@ impl ToolHandler for SearchByAuthorHandler {
                 let source = Arc::clone(source);
                 let author = author.to_string();
                 async move {
-                    match source.search_by_author(&author, max_results, year).await {
+                    match source.search_by_author(&author, max_results, None).await {
                         Ok(response) => Ok(response.papers),
                         Err(e) => {
                             tracing::warn!("Author search failed for {}: {}", source.id(), e);
@@ -286,8 +316,15 @@ impl ToolHandler for SearchByAuthorHandler {
 
         let results = future::join_all(futures).await;
         let mut all_results = Vec::new();
-        for papers in results.into_iter().flatten() {
-            all_results.extend(papers);
+        let mut failures = Vec::new();
+        for result in results {
+            match result {
+                Ok(papers) => all_results.extend(papers),
+                Err(error) => failures.push(error.to_string()),
+            }
+        }
+        if all_results.is_empty() && !failures.is_empty() {
+            return Err(format!("All sources failed: {}", failures.join("; ")));
         }
         serde_json::to_value(all_results).map_err(|e| e.to_string())
     }
@@ -393,10 +430,20 @@ async fn enrich_paper(paper: crate::models::Paper, enrich: bool) -> Result<Value
         Ok(client) => client,
         Err(e) => return Err(e.to_string()),
     };
-    let (tldr, retraction) = tokio::join!(
-        fetch_s2_tldr(&client, &doi),
-        crate::utils::evidence::check_retraction(&client, &doi),
-    );
+    let (tldr, retraction) = match tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(
+            fetch_s2_tldr(&client, &doi),
+            crate::utils::evidence::check_retraction(&client, &doi),
+        )
+    })
+    .await
+    {
+        Ok(results) => results,
+        Err(_) => {
+            tracing::debug!("Enrichment timed out for {doi}");
+            return Ok(value);
+        }
+    };
     if let Some(obj) = value.as_object_mut() {
         match tldr {
             Ok(Some(tldr)) => {
@@ -484,6 +531,11 @@ impl ToolHandler for DownloadPaperHandler {
             .unwrap_or("./downloads");
         let source = self.find_source(paper_id, source_override)?;
         let request = crate::models::DownloadRequest::new(paper_id, output_path);
+        let auto_filename = args
+            .get("auto_filename")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let mut tried = vec![source.id().to_string()];
 
         if let Ok(result) = crate::utils::with_retry(crate::utils::api_retry_config(), || {
             let source = Arc::clone(&source);
@@ -492,7 +544,8 @@ impl ToolHandler for DownloadPaperHandler {
         })
         .await
         {
-            return serde_json::to_value(result).map_err(|e| e.to_string());
+            return finish_download(result, paper_id, source.id(), output_path, auto_filename)
+                .await;
         }
         let fallback_order = ["openaire", "core", "europe_pmc", "pmc", "unpaywall"];
         for fallback_id in &fallback_order {
@@ -504,6 +557,7 @@ impl ToolHandler for DownloadPaperHandler {
                 .iter()
                 .find(|s| s.id() == *fallback_id && s.supports_download())
             {
+                tried.push(fallback_id.to_string());
                 if let Ok(result) =
                     crate::utils::with_retry(crate::utils::api_retry_config(), || {
                         let fb_source = Arc::clone(fallback_source);
@@ -512,7 +566,14 @@ impl ToolHandler for DownloadPaperHandler {
                     })
                     .await
                 {
-                    return serde_json::to_value(result).map_err(|e| e.to_string());
+                    return finish_download(
+                        result,
+                        paper_id,
+                        fallback_id,
+                        output_path,
+                        auto_filename,
+                    )
+                    .await;
                 }
             }
         }
@@ -520,17 +581,47 @@ impl ToolHandler for DownloadPaperHandler {
         // Every source-level download failed; resolve through Unpaywall's
         // ranked best_oa_location as the final fallback.
         match unpaywall_pdf_fallback(&self.sources, paper_id, None, output_path).await {
-            Ok(result) => serde_json::to_value(result).map_err(|e| e.to_string()),
+            Ok(result) => {
+                finish_download(result, paper_id, "unpaywall", output_path, auto_filename).await
+            }
             Err(unpaywall_error) => Err(format!(
-                "Failed to download '{}' from any source (tried {} and OA fallbacks: {}). \
-                 OA resolution: {}",
+                "Failed to download '{}' (tried {}). OA resolution: {}",
                 paper_id,
-                source.id(),
-                fallback_order.join(", "),
+                tried.join(", "),
                 unpaywall_error
             )),
         }
     }
+}
+
+async fn finish_download(
+    mut result: crate::models::DownloadResult,
+    paper_id: &str,
+    source: &str,
+    output_path: &str,
+    auto_filename: bool,
+) -> Result<Value, String> {
+    if result.success {
+        if !auto_filename {
+            let name = crate::utils::sanitize_filename(paper_id).map_err(|e| e.to_string())?;
+            let destination = std::path::Path::new(output_path).join(format!("{name}.pdf"));
+            if std::path::Path::new(&result.path) != destination {
+                tokio::fs::rename(&result.path, &destination)
+                    .await
+                    .map_err(|e| format!("Failed to rename downloaded PDF: {e}"))?;
+                result.path = destination.to_string_lossy().into_owned();
+            }
+        }
+        if let Err(error) = crate::utils::HistoryService::new().add_download(
+            paper_id,
+            source,
+            None,
+            Some(&result.path),
+        ) {
+            tracing::warn!("Could not record download history: {}", error);
+        }
+    }
+    serde_json::to_value(result).map_err(|e| e.to_string())
 }
 
 /// Resolve an OA PDF through Unpaywall and download it directly.
@@ -543,6 +634,9 @@ async fn unpaywall_pdf_fallback(
     doi_hint: Option<&str>,
     output_path: &str,
 ) -> Result<crate::models::DownloadResult, String> {
+    if !paper_id.starts_with("10.") && !doi_hint.is_some_and(|doi| doi.starts_with("10.")) {
+        return Err("Paper identifier is not a DOI".to_string());
+    }
     let unpaywall = sources
         .iter()
         .find(|s| s.id() == "unpaywall")
@@ -676,6 +770,13 @@ impl ToolHandler for ReadPaperHandler {
         let source = self.find_source(paper_id, source_override)?;
         let request = crate::models::ReadRequest::new(paper_id, "./downloads");
         let result = source.read(&request).await.map_err(|e| e.to_string())?;
+        if result.success {
+            if let Err(error) =
+                crate::utils::HistoryService::new().add_view(paper_id, source.id(), None)
+            {
+                tracing::warn!("Could not record read history: {}", error);
+            }
+        }
         let total_chars = result.text.chars().count();
         let (text, offset, truncated, next_start) = if return_full_text {
             (result.text.clone(), 0usize, false, None)
@@ -824,6 +925,11 @@ impl ToolHandler for LookupByDoiHandler {
             .and_then(|v| v.as_str())
             .ok_or("Missing 'doi' parameter")?;
         let source_filter = args.get("source").and_then(|v| v.as_str());
+        if let Some(filter) = source_filter {
+            if !self.sources.iter().any(|s| s.id() == filter) {
+                return Err(format!("Source '{}' not found", filter));
+            }
+        }
 
         for source in self.sources.iter() {
             if let Some(filter) = source_filter {
@@ -894,23 +1000,38 @@ impl ToolHandler for GetRelatedPapersHandler {
             .and_then(|v| v.as_u64())
             .unwrap_or(20) as usize;
 
-        let source_id: String = if let Some(override_id) = source_override {
-            override_id.to_string()
+        let source = if let Some(source_id) = source_override {
+            self.sources
+                .iter()
+                .find(|s| s.id() == source_id)
+                .cloned()
+                .ok_or_else(|| format!("Source '{}' not found", source_id))?
         } else {
-            "semantic".to_string()
+            auto_detect_source(&self.sources, paper_id).or_else(|_| {
+                self.sources
+                    .iter()
+                    .find(|s| s.id() == "semantic")
+                    .cloned()
+                    .ok_or_else(|| "Source 'semantic' not found".to_string())
+            })?
         };
 
-        let source = self
-            .sources
-            .iter()
-            .find(|s| s.id() == source_id.as_str())
-            .ok_or_else(|| format!("Source '{}' not found", source_id))?;
-
         let request = crate::models::CitationRequest::new(paper_id).max_results(max_results);
-        let response = source
-            .get_related(&request)
-            .await
-            .map_err(|e| e.to_string())?;
+        let response = match source.get_related(&request).await {
+            Ok(response) => response,
+            Err(error) if source_override.is_none() && source.id() != "semantic" => {
+                let semantic = self
+                    .sources
+                    .iter()
+                    .find(|s| s.id() == "semantic")
+                    .ok_or_else(|| error.to_string())?;
+                semantic
+                    .get_related(&request)
+                    .await
+                    .map_err(|e| e.to_string())?
+            }
+            Err(error) => return Err(error.to_string()),
+        };
         serde_json::to_value(response).map_err(|e| e.to_string())
     }
 }
@@ -1182,25 +1303,26 @@ impl ToolHandler for CitationGraphHandler {
 
         let request = crate::models::CitationRequest::new(paper_id).max_results(max_results);
 
-        let (citations, references) = futures_util::future::join(
-            async {
-                source
-                    .get_citations(&request)
-                    .await
-                    .map(|r| r.papers)
-                    .unwrap_or_default()
-            },
-            async {
-                source
-                    .get_references(&request)
-                    .await
-                    .map(|r| r.papers)
-                    .unwrap_or_default()
-            },
-        )
-        .await;
+        let (citations, references) = tokio::join!(
+            source.get_citations(&request),
+            source.get_references(&request),
+        );
+        if let (Err(citations_error), Err(references_error)) = (&citations, &references) {
+            return Err(format!(
+                "Citations: {citations_error}; references: {references_error}"
+            ));
+        }
+        let mut errors = serde_json::Map::new();
+        let citations = citations.map(|r| r.papers).unwrap_or_else(|error| {
+            errors.insert("citations".to_string(), Value::String(error.to_string()));
+            Vec::new()
+        });
+        let references = references.map(|r| r.papers).unwrap_or_else(|error| {
+            errors.insert("references".to_string(), Value::String(error.to_string()));
+            Vec::new()
+        });
 
-        let output = serde_json::json!({
+        let mut output = serde_json::json!({
             "paper_id": paper_id,
             "source": source.id(),
             "citation_count": citations.len(),
@@ -1208,6 +1330,9 @@ impl ToolHandler for CitationGraphHandler {
             "citations": citations,
             "references": references,
         });
+        if !errors.is_empty() {
+            output["errors"] = Value::Object(errors);
+        }
 
         serde_json::to_value(output).map_err(|e| e.to_string())
     }
@@ -1232,6 +1357,9 @@ impl ToolHandler for ExportPapersHandler {
             .unwrap_or("bibtex")
             .to_lowercase();
 
+        if !["bibtex", "apa", "mla", "chicago", "csv", "json"].contains(&format.as_str()) {
+            return Err(format!("Unsupported format '{format}'. Supported formats: bibtex, apa, mla, chicago, csv, json"));
+        }
         let entries: Vec<String> = papers
             .iter()
             .map(|p| match format.as_str() {
@@ -1239,14 +1367,17 @@ impl ToolHandler for ExportPapersHandler {
                 "apa" => crate::utils::format_citation(p, crate::utils::CitationStyle::Apa),
                 "mla" => crate::utils::format_citation(p, crate::utils::CitationStyle::Mla),
                 "chicago" => crate::utils::format_citation(p, crate::utils::CitationStyle::Chicago),
-                "csv" => format!(
-                    "\"{}\",\"{}\",\"{}\",{:?},{:?}",
-                    p.paper_id,
-                    p.title.replace('"', "\"\""),
-                    p.authors.replace('"', "\"\""),
-                    p.doi,
-                    p.published_date
-                ),
+                "csv" => [
+                    p.paper_id.as_str(),
+                    p.title.as_str(),
+                    p.authors.as_str(),
+                    p.doi.as_deref().unwrap_or(""),
+                    p.published_date.as_deref().unwrap_or(""),
+                ]
+                .iter()
+                .map(|field| format!("\"{}\"", field.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(","),
                 "json" => serde_json::to_string(p).unwrap_or_default(),
                 _ => crate::utils::format_citation(p, crate::utils::CitationStyle::Bibtex),
             })
@@ -1280,6 +1411,7 @@ impl ToolHandler for RecommendPapersHandler {
             .and_then(|v| v.as_u64())
             .unwrap_or(20) as usize;
 
+        let mut failures = Vec::new();
         // Try Semantic Scholar first (has dedicated related/recommendation API)
         if let Some(source) = self.sources.iter().find(|s| s.id() == "semantic") {
             let request = crate::models::CitationRequest::new(paper_id).max_results(max_results);
@@ -1292,7 +1424,7 @@ impl ToolHandler for RecommendPapersHandler {
                     }))
                     .map_err(|e| e.to_string());
                 }
-                Err(e) => tracing::debug!("Semantic Scholar recommendations failed: {}", e),
+                Err(e) => failures.push(format!("semantic: {e}")),
             }
         }
 
@@ -1308,7 +1440,7 @@ impl ToolHandler for RecommendPapersHandler {
                     }))
                     .map_err(|e| e.to_string());
                 }
-                Err(e) => tracing::debug!("Connected Papers recommendations failed: {}", e),
+                Err(e) => failures.push(format!("connected_papers: {e}")),
             }
         }
 
@@ -1324,13 +1456,18 @@ impl ToolHandler for RecommendPapersHandler {
                     }))
                     .map_err(|e| e.to_string());
                 }
-                Err(e) => tracing::debug!("OpenAlex recommendations failed: {}", e),
+                Err(e) => failures.push(format!("openalex: {e}")),
             }
         }
 
         Err(format!(
-            "Could not find recommendations for '{}' from any source",
-            paper_id
+            "Could not find recommendations for '{}' from any source{}",
+            paper_id,
+            if failures.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", failures.join("; "))
+            }
         ))
     }
 }
@@ -1354,7 +1491,8 @@ impl ToolHandler for WritePaperHandler {
         let mut library: Vec<serde_json::Value> = if library_path.exists() {
             let content = std::fs::read_to_string(&library_path)
                 .map_err(|e| format!("Failed to read library: {}", e))?;
-            serde_json::from_str(&content).unwrap_or_default()
+            serde_json::from_str(&content)
+                .map_err(|e| format!("Failed to parse library {}: {e}", library_path.display()))?
         } else {
             Vec::new()
         };
@@ -1376,8 +1514,10 @@ impl ToolHandler for WritePaperHandler {
         }
         let json = serde_json::to_string_pretty(&library)
             .map_err(|e| format!("Failed to serialize library: {}", e))?;
-        std::fs::write(&library_path, json)
-            .map_err(|e| format!("Failed to write library: {}", e))?;
+        let temp_path = library_path.with_extension("json.tmp");
+        std::fs::write(&temp_path, json).map_err(|e| format!("Failed to write library: {}", e))?;
+        std::fs::rename(&temp_path, &library_path)
+            .map_err(|e| format!("Failed to replace library: {}", e))?;
 
         let result = serde_json::json!({
             "saved": library.len(),
@@ -1485,13 +1625,16 @@ async fn search_exa(
         .header("content-type", "application/json")
         .json(&serde_json::json!({
             "query": query,
-            "numResults": max_results.min(10),
+            "numResults": max_results.clamp(1, 100),
             "type": "auto",
             "useAutoprompt": true,
         }))
         .send()
         .await
         .map_err(|e| format!("Exa search request failed: {}", e))?;
+    if !response.status().is_success() {
+        return Err(format!("Exa search failed: HTTP {}", response.status()));
+    }
 
     let body: Value = response
         .json()
@@ -1530,11 +1673,14 @@ async fn search_tavily(
         .header("content-type", "application/json")
         .json(&serde_json::json!({
             "query": query,
-            "max_results": max_results.min(10),
+            "max_results": max_results.clamp(1, 20),
         }))
         .send()
         .await
         .map_err(|e| format!("Tavily search request failed: {}", e))?;
+    if !response.status().is_success() {
+        return Err(format!("Tavily search failed: HTTP {}", response.status()));
+    }
 
     let body: Value = response
         .json()
@@ -1567,7 +1713,7 @@ async fn search_brave(
     base_url: &str,
 ) -> Result<Value, String> {
     let client = web_search_client()?;
-    let count = max_results.min(10).to_string();
+    let count = max_results.clamp(1, 20).to_string();
 
     let response = client
         .get(base_url)
@@ -1577,6 +1723,9 @@ async fn search_brave(
         .send()
         .await
         .map_err(|e| format!("Brave search request failed: {}", e))?;
+    if !response.status().is_success() {
+        return Err(format!("Brave search failed: HTTP {}", response.status()));
+    }
 
     let body: Value = response
         .json()
@@ -2026,6 +2175,67 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct MixedCitationSource;
+
+    #[async_trait::async_trait]
+    impl Source for MixedCitationSource {
+        fn id(&self) -> &str {
+            "mixed"
+        }
+        fn name(&self) -> &str {
+            "mixed"
+        }
+        fn capabilities(&self) -> SourceCapabilities {
+            SourceCapabilities::CITATIONS
+        }
+        async fn search(
+            &self,
+            _: &crate::models::SearchQuery,
+        ) -> Result<crate::models::SearchResponse, crate::sources::SourceError> {
+            Err(crate::sources::SourceError::NotImplemented)
+        }
+        async fn download(
+            &self,
+            _: &DownloadRequest,
+        ) -> Result<crate::models::DownloadResult, crate::sources::SourceError> {
+            Err(crate::sources::SourceError::NotImplemented)
+        }
+        async fn read(
+            &self,
+            _: &ReadRequest,
+        ) -> Result<crate::models::ReadResult, crate::sources::SourceError> {
+            Err(crate::sources::SourceError::NotImplemented)
+        }
+        async fn get_citations(
+            &self,
+            _: &CitationRequest,
+        ) -> Result<crate::models::SearchResponse, crate::sources::SourceError> {
+            Err(crate::sources::SourceError::RateLimit)
+        }
+        async fn get_references(
+            &self,
+            _: &CitationRequest,
+        ) -> Result<crate::models::SearchResponse, crate::sources::SourceError> {
+            Ok(crate::models::SearchResponse::new(
+                vec![test_paper("ref", "Reference", SourceType::Arxiv)],
+                "mixed",
+                "x",
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_citation_graph_partial_failure() {
+        let handler = CitationGraphHandler {
+            sources: Arc::new(vec![Arc::new(MixedCitationSource)]),
+        };
+        let output = handler.execute(json!({"paper_id": "x"})).await.unwrap();
+        assert_eq!(output["reference_count"], 1);
+        assert_eq!(output["errors"]["citations"], "Rate limit exceeded");
+        assert!(output["errors"].get("references").is_none());
+    }
+
     fn make_test_sources() -> Vec<Arc<dyn Source>> {
         vec![
             Arc::new(MockSource::new("arxiv", SourceCapabilities::all())),
@@ -2069,6 +2279,15 @@ mod tests {
     }
 
     #[test]
+    fn test_auto_detect_legacy_arxiv() {
+        let sources = Arc::new(make_test_sources());
+        assert_eq!(
+            auto_detect_source(&sources, "hep-th/9901001").unwrap().id(),
+            "arxiv"
+        );
+    }
+
+    #[test]
     fn test_auto_detect_iacr() {
         let sources = make_test_sources();
         let result = auto_detect_source(&Arc::new(sources), "2023/1234");
@@ -2098,6 +2317,8 @@ mod tests {
         assert!(paper_id_upper_start("PMC12345", "PMC"));
         assert!(paper_id_upper_start("pmc12345", "PMC"));
         assert!(!paper_id_upper_start("", "PMC"));
+        assert!(!paper_id_upper_start("λλλ", "PMC"));
+        assert!(auto_detect_source(&Arc::new(make_test_sources()), "λλλ").is_ok());
     }
 
     fn empty_sources() -> Arc<Vec<Arc<dyn Source>>> {
@@ -2168,6 +2389,53 @@ mod tests {
         let joined = result["joined"].as_str().expect("joined bibtex string");
         assert!(joined.contains("@"));
         assert!(joined.contains("Test Driven Research"));
+    }
+
+    #[tokio::test]
+    async fn test_export_csv_and_unknown_format() {
+        let handler = ExportPapersHandler {
+            sources: empty_sources(),
+        };
+        let mut paper = test_paper("id,\"x", "a\"b", SourceType::Arxiv);
+        paper.doi = None;
+        paper.published_date = Some("2024".to_string());
+        let result = handler
+            .execute(json!({"papers": [paper.clone()], "format": "csv"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            result["entries"][0],
+            "\"id,\"\"x\",\"a\"\"b\",\"Ada Lovelace; Alan Turing\",\"\",\"2024\""
+        );
+        assert!(handler
+            .execute(json!({"papers": [paper], "format": "unknown"}))
+            .await
+            .unwrap_err()
+            .contains("Supported formats"));
+    }
+
+    #[tokio::test]
+    async fn test_unknown_sources_rejected() {
+        let sources = empty_sources();
+        assert!(SearchPapersHandler {
+            sources: sources.clone()
+        }
+        .execute(json!({"query":"x", "source":"missing"}))
+        .await
+        .unwrap_err()
+        .contains("Source 'missing' not found"));
+        assert!(SearchByAuthorHandler {
+            sources: sources.clone()
+        }
+        .execute(json!({"author":"x", "source":"missing"}))
+        .await
+        .unwrap_err()
+        .contains("Source 'missing' not found"));
+        assert!(LookupByDoiHandler { sources }
+            .execute(json!({"doi":"10.1/x", "source":"missing"}))
+            .await
+            .unwrap_err()
+            .contains("Source 'missing' not found"));
     }
 
     #[tokio::test]
@@ -2446,6 +2714,40 @@ mod tests {
         anonymous.assert_async().await;
 
         assert_eq!(out["results"][0]["full_name"], "org/repo");
+    }
+
+    #[tokio::test]
+    async fn test_web_search_providers_reject_http_errors() {
+        let mut server = mockito::Server::new_async().await;
+        let post = server
+            .mock("POST", "/search")
+            .with_status(429)
+            .with_body("{}")
+            .expect(2)
+            .create_async()
+            .await;
+        let get = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(503)
+            .with_body("{}")
+            .expect(1)
+            .create_async()
+            .await;
+        let url = format!("{}/search", server.url());
+        assert!(search_exa("x", 5, "key", &url)
+            .await
+            .unwrap_err()
+            .contains("HTTP 429"));
+        assert!(search_tavily("x", 5, "key", &url)
+            .await
+            .unwrap_err()
+            .contains("HTTP 429"));
+        assert!(search_brave("x", 5, "key", &url)
+            .await
+            .unwrap_err()
+            .contains("HTTP 503"));
+        post.assert_async().await;
+        get.assert_async().await;
     }
 
     #[tokio::test]

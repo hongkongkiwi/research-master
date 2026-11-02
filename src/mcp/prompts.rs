@@ -65,9 +65,10 @@ impl PromptHandler for LiteratureReviewPrompt {
                         work, high citation counts, and papers from multiple sources.\n\
                      3. For each chosen paper: call get_paper with enrich enabled (use the tldr),\n\
                         then get_paper_outline, then read_paper_section for the sections that\n\
-                        matter (abstract, results, discussion). Read Methods only if the claim\n\
-                        depends on methodology. Use max_chars to stay bounded and paginate with\n\
-                        offset when a section is truncated.\n\
+                        matter (abstract, results, discussion), carrying the resolved source into\n\
+                        both calls. Read Methods only if the claim depends on methodology. Use\n\
+                        max_chars and paginate with the returned section-relative byte offset\n\
+                        next_start as offset when a section is truncated.\n\
                      4. Synthesize: state themes, agreements, contradictions, and open gaps.\n\
                         Cite every claim as (title, source, paper_id).\n\
                      5. Finish with export_papers in bibtex format covering the reviewed papers."
@@ -102,9 +103,9 @@ impl PromptHandler for DeepPaperAnalysisPrompt {
                     "Analyze the paper '{paper_id}' in depth.\n\
                      1. get_paper with paper_id '{paper_id}' (enrich on): capture the tldr, DOI,\n\
                         license and citation count.\n\
-                     2. get_paper_outline, then read_paper_section for abstract, results and\n\
-                        discussion, keeping each read under max_chars 12000 and paginating via\n\
-                        offset when truncated.\n\
+                     2. Carry the resolved source into get_paper_outline and read_paper_section\n\
+                        for abstract, results and discussion. Keep each read under max_chars\n\
+                        12000; when truncated pass next_start as the section-relative byte offset.\n\
                      3. Report: main claims, the evidence behind each, stated limitations, and\n\
                         anything the abstract oversells.\n\
                      4. Call get_citations and get_references; list the three most important\n\
@@ -149,8 +150,8 @@ impl PromptHandler for ResearchDiscoveryPrompt {
                     "Build a reading list starting from the seed: {seed}.\n\
                      1. {seed_note}\n\
                      2. Call recommend_papers with that paper_id to get related work.\n\
-                     3. For the five most promising recommendations, call batch_get_papers and\n\
-                        record tldr, citation count and license.\n\
+                     3. For each of the five most promising recommendations, call get_paper\n\
+                        with enrichment enabled and record tldr, citation count and license.\n\
                      4. Order the list by reading priority (recency, citations, open access)\n\
                         with one sentence per paper on what it adds over the seed.\n\
                      5. If this is an active topic, call watch_topic so new papers surface on\n\
@@ -186,8 +187,9 @@ impl PromptHandler for CitationAuditPrompt {
                     "Audit the evidence base of '{paper_id}'.\n\
                      1. get_paper with paper_id '{paper_id}': confirm the DOI and record the\n\
                         retraction field if present.\n\
-                     2. get_citation_tallies on the DOI: report supporting, contradicting and\n\
-                        mentioning counts. A high contradicting share is a warning.\n\
+                     2. If a DOI is present, get_citation_tallies and report supporting,\n\
+                        contradicting and mentioning counts. A high contradicting share is a\n\
+                        warning. Without a DOI, report tallies unavailable and continue.\n\
                      3. get_citations for citing papers and get_references for its basis; sample\n\
                         three references and check each with get_paper for retraction flags.\n\
                      4. Verdict: cite this, cite with caveats, or avoid. Justify with the numbers\n\
