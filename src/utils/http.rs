@@ -5,7 +5,7 @@ use governor::{
     state::{InMemoryState, NotKeyed},
     Quota, RateLimiter,
 };
-use reqwest::{header, Client, StatusCode};
+use reqwest::{header, Client, ClientBuilder, StatusCode};
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
@@ -28,6 +28,10 @@ const HTTPS_PROXY_ENV_VAR: &str = "HTTPS_PROXY";
 
 /// Environment variable for no proxy (comma-separated list of hosts to bypass proxy)
 const NO_PROXY_ENV_VAR: &str = "NO_PROXY";
+
+/// Environment variable for a general proxy, applied to both HTTP and HTTPS
+/// when the scheme-specific variables are unset
+const PROXY_ENV_VAR: &str = "RESEARCH_MASTER_PROXY";
 
 /// Proxy configuration
 #[derive(Debug, Clone, Default)]
@@ -62,12 +66,46 @@ impl ProxyConfig {
         }
         self
     }
+
+    /// Apply these proxy URLs to a client builder. Following the curl
+    /// convention, which variable is set decides which traffic is proxied
+    /// (`Proxy::http` scopes to HTTP requests, `Proxy::https` to HTTPS
+    /// requests); the URL's own scheme only tells reqwest how to reach the
+    /// proxy (http CONNECT proxy, https, or socks5/socks5h). The no-proxy
+    /// host list is attached to each proxy because an explicit proxy
+    /// otherwise shadows reqwest's NO_PROXY-aware system matcher.
+    pub fn apply_to(&self, mut builder: ClientBuilder) -> Result<ClientBuilder, reqwest::Error> {
+        let no_proxy = self
+            .no_proxy
+            .as_ref()
+            .filter(|hosts| !hosts.is_empty())
+            .map(|hosts| reqwest::NoProxy::from_string(&hosts.join(",")));
+        for (url, scope) in [
+            (self.http_proxy.as_deref(), "http"),
+            (self.https_proxy.as_deref(), "https"),
+        ] {
+            let Some(url) = url else { continue };
+            let mut proxy = match scope {
+                "http" => reqwest::Proxy::http(url)?,
+                _ => reqwest::Proxy::https(url)?,
+            };
+            if let Some(np) = no_proxy.clone() {
+                proxy = proxy.no_proxy(np);
+            }
+            builder = builder.proxy(proxy);
+        }
+        Ok(builder)
+    }
 }
 
 /// Create proxy configuration from environment variables
+/// HTTP_PROXY/HTTPS_PROXY take precedence over RESEARCH_MASTER_PROXY per scheme
 pub fn create_proxy_config() -> ProxyConfig {
-    let http_proxy = std::env::var(HTTP_PROXY_ENV_VAR).ok();
-    let https_proxy = std::env::var(HTTPS_PROXY_ENV_VAR).ok();
+    let general_proxy = std::env::var(PROXY_ENV_VAR).ok();
+    let http_proxy = std::env::var(HTTP_PROXY_ENV_VAR)
+        .ok()
+        .or_else(|| general_proxy.clone());
+    let https_proxy = std::env::var(HTTPS_PROXY_ENV_VAR).ok().or(general_proxy);
     let no_proxy: Option<Vec<String>> = std::env::var(NO_PROXY_ENV_VAR)
         .ok()
         .map(|s| s.split(',').map(|v| v.trim().to_string()).collect());
@@ -253,22 +291,15 @@ impl HttpClient {
         let rate_limiter = Self::create_rate_limiter();
         let proxy = create_proxy_config();
 
-        let mut builder = Client::builder()
+        let builder = Client::builder()
             .user_agent(user_agent)
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
             .pool_idle_timeout(Duration::from_secs(90));
 
-        // Apply proxy if configured
-        if let Some(proxy_url) = proxy.http_proxy {
-            builder = builder.proxy(reqwest::Proxy::http(&proxy_url)?);
-        }
-        if let Some(proxy_url) = proxy.https_proxy {
-            builder = builder.proxy(reqwest::Proxy::https(&proxy_url)?);
-        }
-
-        let client = builder
-            .build()
+        let client = proxy
+            .apply_to(builder)
+            .and_then(|b| b.build())
             .map_err(|e| SourceError::Network(format!("Failed to create HTTP client: {}", e)))?;
 
         Ok(Self {
@@ -283,22 +314,15 @@ impl HttpClient {
         let rate_limiter = Self::create_rate_limiter();
         let proxy = create_proxy_config();
 
-        let mut builder = Client::builder()
+        let builder = Client::builder()
             .user_agent(user_agent)
             .timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(10))
             .pool_idle_timeout(Duration::from_secs(90));
 
-        // Apply proxy if configured
-        if let Some(proxy_url) = proxy.http_proxy {
-            builder = builder.proxy(reqwest::Proxy::http(&proxy_url)?);
-        }
-        if let Some(proxy_url) = proxy.https_proxy {
-            builder = builder.proxy(reqwest::Proxy::https(&proxy_url)?);
-        }
-
-        let client = builder
-            .build()
+        let client = proxy
+            .apply_to(builder)
+            .and_then(|b| b.build())
             .map_err(|e| SourceError::Network(format!("Failed to create HTTP client: {}", e)))?;
 
         Ok(Self {
@@ -311,21 +335,15 @@ impl HttpClient {
     /// Create a new HTTP client without rate limiting
     pub fn without_rate_limit(user_agent: &str) -> Result<Self, SourceError> {
         let proxy = create_proxy_config();
-        let mut builder = Client::builder()
+        let builder = Client::builder()
             .user_agent(user_agent)
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
             .pool_idle_timeout(Duration::from_secs(90));
 
-        if let Some(proxy_url) = proxy.http_proxy {
-            builder = builder.proxy(reqwest::Proxy::http(&proxy_url)?);
-        }
-        if let Some(proxy_url) = proxy.https_proxy {
-            builder = builder.proxy(reqwest::Proxy::https(&proxy_url)?);
-        }
-
-        let client = builder
-            .build()
+        let client = proxy
+            .apply_to(builder)
+            .and_then(|b| b.build())
             .map_err(|e| SourceError::Network(format!("Failed to create HTTP client: {}", e)))?;
 
         Ok(Self {
@@ -355,21 +373,15 @@ impl HttpClient {
         };
 
         let proxy = create_proxy_config();
-        let mut builder = Client::builder()
+        let builder = Client::builder()
             .user_agent(user_agent)
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
             .pool_idle_timeout(Duration::from_secs(90));
 
-        if let Some(proxy_url) = proxy.http_proxy {
-            builder = builder.proxy(reqwest::Proxy::http(&proxy_url)?);
-        }
-        if let Some(proxy_url) = proxy.https_proxy {
-            builder = builder.proxy(reqwest::Proxy::https(&proxy_url)?);
-        }
-
-        let client = builder
-            .build()
+        let client = proxy
+            .apply_to(builder)
+            .and_then(|b| b.build())
             .map_err(|e| SourceError::Network(format!("Failed to create HTTP client: {}", e)))?;
 
         Ok(Self {
@@ -395,27 +407,27 @@ impl HttpClient {
             Some(Arc::new(RateLimiter::direct(quota)))
         };
 
-        let mut builder = Client::builder()
+        let builder = Client::builder()
             .user_agent(user_agent)
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
             .pool_idle_timeout(Duration::from_secs(90));
 
-        if let Some(proxy_url) = http_proxy {
-            builder = builder.proxy(reqwest::Proxy::http(&proxy_url)?);
-        }
-        if let Some(proxy_url) = https_proxy {
-            builder = builder.proxy(reqwest::Proxy::https(&proxy_url)?);
-        }
+        let proxy = ProxyConfig {
+            http_proxy,
+            https_proxy,
+            no_proxy: None, // Per-source proxy doesn't use env no_proxy
+        };
 
-        let client = builder
-            .build()
+        let client = proxy
+            .apply_to(builder)
+            .and_then(|b| b.build())
             .map_err(|e| SourceError::Network(format!("Failed to create HTTP client: {}", e)))?;
 
         Ok(Self {
             client: Arc::new(client),
             rate_limiter,
-            no_proxy: None, // Per-source proxy doesn't use env no_proxy
+            no_proxy: None,
         })
     }
 
@@ -585,6 +597,40 @@ mod tests {
         result
     }
 
+    /// Clears all proxy environment variables, applies `values` while `f`
+    /// runs, and restores everything afterwards.
+    fn with_proxy_env<T>(values: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        const VARS: [&str; 4] = [
+            PROXY_ENV_VAR,
+            HTTP_PROXY_ENV_VAR,
+            HTTPS_PROXY_ENV_VAR,
+            NO_PROXY_ENV_VAR,
+        ];
+        let previous: Vec<(&str, Option<String>)> =
+            VARS.iter().map(|v| (*v, std::env::var(v).ok())).collect();
+        for var in VARS {
+            std::env::remove_var(var);
+        }
+        for (var, value) in values {
+            match value {
+                Some(v) => std::env::set_var(var, v),
+                None => std::env::remove_var(var),
+            }
+        }
+
+        let result = f();
+
+        for (var, value) in previous {
+            match value {
+                Some(v) => std::env::set_var(var, v),
+                None => std::env::remove_var(var),
+            }
+        }
+
+        result
+    }
+
     #[test]
     fn test_create_rate_limiter_with_default() {
         with_rate_limit_env(None, || {
@@ -671,5 +717,151 @@ mod tests {
         ));
         assert!(should_bypass_proxy("https://arxiv.org", &no_proxy));
         assert!(!should_bypass_proxy("https://openalex.org", &no_proxy));
+    }
+
+    #[test]
+    fn test_apply_proxy_scheme_urls() {
+        // Any of the supported proxy schemes must be accepted for both the
+        // HTTP-scoped and HTTPS-scoped variables.
+        for url in [
+            "http://proxy.local:8080",
+            "https://proxy.local:8080",
+            "socks5://proxy.local:1080",
+            "socks5h://proxy.local:1080",
+        ] {
+            for scope in ["http_proxy", "https_proxy"] {
+                let config = if scope == "http_proxy" {
+                    ProxyConfig {
+                        http_proxy: Some(url.to_string()),
+                        https_proxy: None,
+                        no_proxy: None,
+                    }
+                } else {
+                    ProxyConfig {
+                        http_proxy: None,
+                        https_proxy: Some(url.to_string()),
+                        no_proxy: None,
+                    }
+                };
+                assert!(
+                    config.apply_to(Client::builder()).is_ok(),
+                    "proxy URL {url} should be accepted for {scope}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_apply_proxy_invalid_url_errors() {
+        let config = ProxyConfig {
+            http_proxy: Some("not a proxy url".to_string()),
+            https_proxy: None,
+            no_proxy: None,
+        };
+        assert!(
+            config.apply_to(Client::builder()).is_err(),
+            "a URL reqwest cannot parse as a proxy should error"
+        );
+    }
+
+    /// Requests must route through the configured proxy: a request to a
+    /// local HTTP target via a dead proxy fails, and succeeds once the proxy
+    /// env is cleared. (The HTTPS-scoped branch is symmetric; reqwest applies
+    /// `Proxy::http`/`Proxy::https` identically per traffic scheme.)
+    #[tokio::test]
+    async fn test_http_traffic_goes_through_proxy() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/")
+            .with_status(200)
+            .expect(2)
+            .create_async()
+            .await;
+        let url = server.url();
+
+        let client = with_proxy_env(&[(HTTP_PROXY_ENV_VAR, Some("http://127.0.0.1:9"))], || {
+            HttpClient::with_user_agent("research-master-proxy-test").expect("client")
+        });
+        let proxied = client.get(&url).send().await;
+        assert!(proxied.is_err(), "request via dead proxy must fail");
+
+        // NO_PROXY containing the target host must bypass the dead proxy.
+        let client_no_proxy = with_proxy_env(
+            &[
+                (HTTP_PROXY_ENV_VAR, Some("http://127.0.0.1:9")),
+                (NO_PROXY_ENV_VAR, Some("127.0.0.1")),
+            ],
+            || HttpClient::with_user_agent("research-master-proxy-test").expect("client"),
+        );
+        let bypassed = client_no_proxy.get(&url).send().await;
+        assert!(bypassed.is_ok(), "NO_PROXY host must bypass the proxy");
+
+        let client_clear = with_proxy_env(&[], || {
+            HttpClient::with_user_agent("research-master-proxy-test").expect("client")
+        });
+        let direct = client_clear.get(&url).send().await;
+        assert!(direct.is_ok(), "request without proxy must succeed");
+        mock.assert_async().await;
+    }
+
+    #[test]
+    fn test_create_proxy_config_general_fallback() {
+        with_proxy_env(
+            &[(PROXY_ENV_VAR, Some("socks5://proxy.local:1080"))],
+            || {
+                let config = create_proxy_config();
+                assert_eq!(
+                    config.http_proxy.as_deref(),
+                    Some("socks5://proxy.local:1080")
+                );
+                assert_eq!(
+                    config.https_proxy.as_deref(),
+                    Some("socks5://proxy.local:1080")
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn test_create_proxy_config_scheme_vars_take_precedence() {
+        with_proxy_env(
+            &[
+                (PROXY_ENV_VAR, Some("socks5://proxy.local:1080")),
+                (HTTP_PROXY_ENV_VAR, Some("http://proxy.local:8080")),
+                (HTTPS_PROXY_ENV_VAR, Some("https://proxy.local:8080")),
+            ],
+            || {
+                let config = create_proxy_config();
+                assert_eq!(
+                    config.http_proxy.as_deref(),
+                    Some("http://proxy.local:8080")
+                );
+                assert_eq!(
+                    config.https_proxy.as_deref(),
+                    Some("https://proxy.local:8080")
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn test_create_proxy_config_general_fills_only_unset_scheme() {
+        with_proxy_env(
+            &[
+                (PROXY_ENV_VAR, Some("socks5://proxy.local:1080")),
+                (HTTP_PROXY_ENV_VAR, Some("http://proxy.local:8080")),
+            ],
+            || {
+                let config = create_proxy_config();
+                assert_eq!(
+                    config.http_proxy.as_deref(),
+                    Some("http://proxy.local:8080")
+                );
+                assert_eq!(
+                    config.https_proxy.as_deref(),
+                    Some("socks5://proxy.local:1080")
+                );
+            },
+        );
     }
 }
