@@ -96,6 +96,14 @@ impl TransientError {
                     || msg_lower.contains("temporarily unavailable")
                 {
                     Some(TransientError::ServiceUnavailable)
+                } else if msg_lower.contains("status: 429") || msg_lower.contains("rate-limit") {
+                    Some(TransientError::TooManyRequests)
+                } else if msg_lower.contains("status: 503") {
+                    Some(TransientError::ServiceUnavailable)
+                } else if msg_lower.contains("status: 504") {
+                    Some(TransientError::GatewayTimeout)
+                } else if msg_lower.contains("status: 500") || msg_lower.contains("status: 502") {
+                    Some(TransientError::ServerError)
                 } else {
                     None
                 }
@@ -145,13 +153,18 @@ where
     Fut: std::future::Future<Output = Result<T, SourceError>>,
 {
     let mut attempts = 0;
-    let mut total_elapsed = Duration::ZERO;
+    let deadline = tokio::time::Instant::now() + config.max_total_time;
     let mut operation = operation;
 
     loop {
         attempts += 1;
 
-        match timeout(config.max_total_time, operation()).await {
+        match timeout(
+            deadline.saturating_duration_since(tokio::time::Instant::now()),
+            operation(),
+        )
+        .await
+        {
             Ok(Ok(result)) => {
                 // Success
                 if attempts > 1 {
@@ -179,13 +192,12 @@ where
                     // Also consider error-specific recommended delay
                     let delay = std::cmp::max(delay, transient.recommended_delay());
 
-                    total_elapsed += delay;
-
-                    if attempts >= config.max_attempts || total_elapsed >= config.max_total_time {
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if attempts >= config.max_attempts || delay >= remaining {
                         tracing::warn!(
                             "Operation failed after {} attempts (total elapsed: {:?}): {}",
                             attempts,
-                            total_elapsed,
+                            config.max_total_time.saturating_sub(remaining),
                             error
                         );
                         return Err(error);
@@ -213,7 +225,9 @@ where
                 }
 
                 let delay = config.initial_delay;
-                total_elapsed += delay;
+                if delay >= deadline.saturating_duration_since(tokio::time::Instant::now()) {
+                    return Err(error);
+                }
 
                 tracing::debug!(
                     "Operation timed out, attempt {}/{}",
@@ -235,13 +249,18 @@ where
     Fut: std::future::Future<Output = Result<T, SourceError>>,
 {
     let mut attempts = 0;
-    let mut total_elapsed = Duration::ZERO;
+    let deadline = tokio::time::Instant::now() + config.max_total_time;
     let mut operation = operation;
 
     loop {
         attempts += 1;
 
-        match timeout(config.max_total_time, operation()).await {
+        match timeout(
+            deadline.saturating_duration_since(tokio::time::Instant::now()),
+            operation(),
+        )
+        .await
+        {
             Ok(Ok(result)) => {
                 return RetryResult::Success(result);
             }
@@ -256,9 +275,8 @@ where
                     };
 
                     let delay = std::cmp::max(delay, transient.recommended_delay());
-                    total_elapsed += delay;
-
-                    if attempts >= config.max_attempts || total_elapsed >= config.max_total_time {
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if attempts >= config.max_attempts || delay >= remaining {
                         return RetryResult::TransientFailure(error, transient, attempts);
                     }
 
@@ -275,7 +293,9 @@ where
                 }
 
                 let delay = config.initial_delay;
-                total_elapsed += delay;
+                if delay >= deadline.saturating_duration_since(tokio::time::Instant::now()) {
+                    return RetryResult::TransientFailure(error, TransientError::Timeout, attempts);
+                }
                 sleep(delay).await;
             }
         }
@@ -397,6 +417,22 @@ mod tests {
             }
         }
         assert_eq!(*call_count.borrow(), 1); // Should not retry on permanent error
+    }
+
+    #[test]
+    fn test_transient_source_status_messages() {
+        for status in [429, 500, 502, 503, 504] {
+            let error = SourceError::Api(format!("Source API returned status: {status}"));
+            assert!(TransientError::from_source_error(&error).is_some());
+        }
+        assert!(
+            TransientError::from_source_error(&SourceError::Api("RATE-LIMIT reached".into()))
+                .is_some()
+        );
+        assert!(TransientError::from_source_error(&SourceError::Api(
+            "API returned status: 400".into()
+        ))
+        .is_none());
     }
 
     #[test]

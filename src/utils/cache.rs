@@ -20,7 +20,10 @@ use crate::models::{SearchQuery, SearchResponse};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
+
+static CACHE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Cache metadata stored with each cached item
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,7 +127,8 @@ impl CacheService {
 
     /// Generate a cache key for a search query, including source-specific options.
     fn search_cache_key(&self, query: &SearchQuery, source: &str) -> String {
-        let input = serde_json::to_vec(&(source, query)).unwrap_or_default();
+        let input = serde_json::to_vec(&(source, serde_json::to_value(query).unwrap_or_default()))
+            .unwrap_or_default();
         format!("{:x}", md5::compute(input))
     }
 
@@ -236,12 +240,18 @@ impl CacheService {
     }
 
     /// Cache a citation lookup response
-    pub fn set_citations(&self, source: &str, paper_id: &str, response: &SearchResponse) {
+    pub fn set_citations(
+        &self,
+        source: &str,
+        paper_id: &str,
+        max_results: usize,
+        response: &SearchResponse,
+    ) {
         if !self.is_enabled() {
             return;
         }
 
-        let key = self.citation_cache_key(paper_id, source, response.papers.len());
+        let key = self.citation_cache_key(paper_id, source, max_results);
         let cache_path = self.citation_dir.join(&key);
 
         let cached = CachedSearchResponse {
@@ -280,8 +290,41 @@ impl CacheService {
 
     /// Serialize and write a cached file
     fn write_cache_file<T: Serialize>(&self, path: &Path, data: &T) -> Result<(), std::io::Error> {
-        let content = serde_json::to_string_pretty(data)?;
-        fs::write(path, content)
+        let content = serde_json::to_vec_pretty(data)?;
+        let _guard = CACHE_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        fs::create_dir_all(path.parent().expect("cache entry has a parent"))?;
+        let budget = (self.config.max_size_mb as u64).saturating_mul(1024 * 1024);
+        if content.len() as u64 > budget {
+            return Err(std::io::Error::other("cache entry exceeds size limit"));
+        }
+        let mut files = Vec::new();
+        for dir in [&self.search_dir, &self.citation_dir] {
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries {
+                    let entry = entry?;
+                    let metadata = entry.metadata()?;
+                    if metadata.is_file() && entry.path() != path {
+                        files.push((
+                            metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                            metadata.len(),
+                            entry.path(),
+                        ));
+                    }
+                }
+            }
+        }
+        files.sort_by_key(|entry| entry.0);
+        let mut size: u64 = files.iter().map(|entry| entry.1).sum();
+        for (_, len, file) in files {
+            if size.saturating_add(content.len() as u64) <= budget {
+                break;
+            }
+            fs::remove_file(file)?;
+            size -= len;
+        }
+        let tmp = path.with_extension("tmp");
+        fs::write(&tmp, content)?;
+        fs::rename(tmp, path)
     }
 
     /// Clear all cached data
@@ -492,6 +535,32 @@ mod tests {
             cache.search_cache_key(&base.clone().filter("type", "paper"), "arxiv")
         );
         assert_ne!(first, cache.search_cache_key(&base, "semantic"));
+    }
+
+    #[test]
+    fn cache_keys_are_stable_and_citations_use_requested_limit() {
+        let dir = TempDir::new().unwrap();
+        let mut config = test_cache_config();
+        config.directory = Some(dir.path().join("fresh"));
+        let cache = CacheService::from_config(config);
+        let a = SearchQuery::new("q").filter("a", "1").filter("b", "2");
+        let b = SearchQuery::new("q").filter("b", "2").filter("a", "1");
+        assert_eq!(
+            cache.search_cache_key(&a, "s"),
+            cache.search_cache_key(&b, "s")
+        );
+        let response = SearchResponse::new(vec![], "s".to_string(), "q".to_string());
+        cache.set_search("s", &a, &response);
+        assert!(matches!(cache.get_search(&b, "s"), CacheResult::Hit(_)));
+        cache.set_citations("s", "id", 10, &response);
+        assert!(matches!(
+            cache.get_citations("id", "s", 10),
+            CacheResult::Hit(_)
+        ));
+        assert!(matches!(
+            cache.get_citations("id", "s", 0),
+            CacheResult::Miss
+        ));
     }
 
     #[tokio::test]

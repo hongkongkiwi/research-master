@@ -143,6 +143,12 @@ pub struct ZoteroClient {
 }
 
 impl ZoteroClient {
+    /// Shared production client, retaining its rate limiter across requests.
+    pub fn shared() -> &'static ZoteroClient {
+        static CLIENT: std::sync::OnceLock<ZoteroClient> = std::sync::OnceLock::new();
+        CLIENT.get_or_init(ZoteroClient::default)
+    }
+
     /// Client against the production API, honoring the base-URL env override.
     pub fn new() -> Result<Self, String> {
         let base_url = non_empty_env("RESEARCH_MASTER_ZOTERO_API_URL")
@@ -189,7 +195,7 @@ impl ZoteroClient {
         if !status.is_success() {
             return Err(format!(
                 "Zotero save failed with status {status}: {}",
-                body_snippet(&text)
+                body_snippet(&text).replace(&key, "<redacted>")
             ));
         }
         let parsed: Value = serde_json::from_str(&text)
@@ -205,7 +211,8 @@ impl ZoteroClient {
             None => {
                 let failed = parsed.get("failed").cloned().unwrap_or(Value::Null);
                 Err(format!(
-                    "Zotero accepted the request but created no item (failed: {failed})"
+                    "Zotero accepted the request but created no item (failed: {})",
+                    failed.to_string().replace(&key, "<redacted>")
                 ))
             }
         }
@@ -235,7 +242,7 @@ impl ZoteroClient {
         if !status.is_success() {
             return Err(format!(
                 "Zotero search failed with status {status}: {}",
-                body_snippet(&text)
+                body_snippet(&text).replace(&key, "<redacted>")
             ));
         }
         serde_json::from_str(&text).map_err(|e| format!("cannot parse Zotero search response: {e}"))

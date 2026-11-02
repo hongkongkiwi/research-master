@@ -8,14 +8,11 @@ use governor::{
 use reqwest::{header, Client, ClientBuilder, StatusCode};
 use std::num::NonZeroU32;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use crate::models::{DownloadRequest, DownloadResult};
 use crate::sources::SourceError;
-
-/// Default rate limit: requests per second
-const DEFAULT_REQUESTS_PER_SECOND: u32 = 5;
 
 /// Environment variable for rate limiting (requests per second)
 const RATE_LIMIT_ENV_VAR: &str = "RESEARCH_MASTER_RATE_LIMITS_DEFAULT_REQUESTS_PER_SECOND";
@@ -32,6 +29,30 @@ const NO_PROXY_ENV_VAR: &str = "NO_PROXY";
 /// Environment variable for a general proxy, applied to both HTTP and HTTPS
 /// when the scheme-specific variables are unset
 const PROXY_ENV_VAR: &str = "RESEARCH_MASTER_PROXY";
+
+static GLOBAL_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+
+/// Set the timeout used by subsequently constructed HTTP clients.
+pub fn set_global_timeout(timeout: Duration) -> Result<(), Duration> {
+    GLOBAL_TIMEOUT.set(timeout)
+}
+
+fn effective_timeout(default: Duration) -> Duration {
+    GLOBAL_TIMEOUT.get().copied().unwrap_or(default)
+}
+
+pub(crate) fn redact_proxy_url(value: &str) -> String {
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return "<unparseable-proxy>".to_string();
+    };
+    let Some(host) = url.host_str() else {
+        return "<unparseable-proxy>".to_string();
+    };
+    match url.port() {
+        Some(port) => format!("{}://{}:{}", url.scheme(), host, port),
+        None => format!("{}://{}", url.scheme(), host),
+    }
+}
 
 /// Proxy configuration
 #[derive(Debug, Clone, Default)]
@@ -98,23 +119,41 @@ impl ProxyConfig {
     }
 }
 
-/// Create proxy configuration from environment variables
-/// HTTP_PROXY/HTTPS_PROXY take precedence over RESEARCH_MASTER_PROXY per scheme
+/// Create proxy configuration from environment variables, falling back to
+/// the loaded file config's [proxy] section per scheme. Environment variables
+/// (HTTP_PROXY/HTTPS_PROXY, then RESEARCH_MASTER_PROXY) win over the file.
 pub fn create_proxy_config() -> ProxyConfig {
     let general_proxy = std::env::var(PROXY_ENV_VAR).ok();
-    let http_proxy = std::env::var(HTTP_PROXY_ENV_VAR)
+    let mut http_proxy = std::env::var(HTTP_PROXY_ENV_VAR)
         .ok()
         .or_else(|| general_proxy.clone());
-    let https_proxy = std::env::var(HTTPS_PROXY_ENV_VAR).ok().or(general_proxy);
-    let no_proxy: Option<Vec<String>> = std::env::var(NO_PROXY_ENV_VAR)
+    let mut https_proxy = std::env::var(HTTPS_PROXY_ENV_VAR).ok().or(general_proxy);
+    let mut no_proxy: Option<Vec<String>> = std::env::var(NO_PROXY_ENV_VAR)
         .ok()
         .map(|s| s.split(',').map(|v| v.trim().to_string()).collect());
+
+    // File-based [proxy] fills whatever the environment left unset.
+    let file_proxy = crate::config::get_config().proxy.clone();
+    if http_proxy.is_none() {
+        http_proxy = file_proxy.http.clone().filter(|u| !u.trim().is_empty());
+    }
+    if https_proxy.is_none() {
+        https_proxy = file_proxy.https.clone().filter(|u| !u.trim().is_empty());
+    }
+    if no_proxy.is_none() {
+        no_proxy = file_proxy.no_proxy.clone().map(|s| {
+            s.split(',')
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .collect()
+        });
+    }
 
     if http_proxy.is_some() || https_proxy.is_some() {
         tracing::info!(
             "Proxy configured: HTTP={:?}, HTTPS={:?}, NO_PROXY={:?}",
-            http_proxy,
-            https_proxy,
+            http_proxy.as_deref().map(redact_proxy_url),
+            https_proxy.as_deref().map(redact_proxy_url),
             no_proxy
         );
     }
@@ -293,7 +332,7 @@ impl HttpClient {
 
         let builder = Client::builder()
             .user_agent(user_agent)
-            .timeout(Duration::from_secs(30))
+            .timeout(effective_timeout(Duration::from_secs(30)))
             .connect_timeout(Duration::from_secs(10))
             .pool_idle_timeout(Duration::from_secs(90));
 
@@ -316,7 +355,7 @@ impl HttpClient {
 
         let builder = Client::builder()
             .user_agent(user_agent)
-            .timeout(Duration::from_secs(timeout_secs))
+            .timeout(effective_timeout(Duration::from_secs(timeout_secs)))
             .connect_timeout(Duration::from_secs(10))
             .pool_idle_timeout(Duration::from_secs(90));
 
@@ -337,7 +376,7 @@ impl HttpClient {
         let proxy = create_proxy_config();
         let builder = Client::builder()
             .user_agent(user_agent)
-            .timeout(Duration::from_secs(30))
+            .timeout(effective_timeout(Duration::from_secs(30)))
             .connect_timeout(Duration::from_secs(10))
             .pool_idle_timeout(Duration::from_secs(90));
 
@@ -375,7 +414,7 @@ impl HttpClient {
         let proxy = create_proxy_config();
         let builder = Client::builder()
             .user_agent(user_agent)
-            .timeout(Duration::from_secs(30))
+            .timeout(effective_timeout(Duration::from_secs(30)))
             .connect_timeout(Duration::from_secs(10))
             .pool_idle_timeout(Duration::from_secs(90));
 
@@ -409,7 +448,7 @@ impl HttpClient {
 
         let builder = Client::builder()
             .user_agent(user_agent)
-            .timeout(Duration::from_secs(30))
+            .timeout(effective_timeout(Duration::from_secs(30)))
             .connect_timeout(Duration::from_secs(10))
             .pool_idle_timeout(Duration::from_secs(90));
 
@@ -435,8 +474,18 @@ impl HttpClient {
     fn create_rate_limiter() -> Option<Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>> {
         let requests_per_second = std::env::var(RATE_LIMIT_ENV_VAR)
             .ok()
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(DEFAULT_REQUESTS_PER_SECOND);
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or_else(|| {
+                crate::config::get_config()
+                    .rate_limits
+                    .default_requests_per_second
+            });
+        // Governor accepts whole requests per second; preserve zero as disabled.
+        let requests_per_second = if requests_per_second == 0.0 {
+            0
+        } else {
+            requests_per_second.round().max(1.0) as u32
+        };
 
         if requests_per_second == 0 {
             // Rate limiting disabled
@@ -629,6 +678,15 @@ mod tests {
         }
 
         result
+    }
+
+    #[test]
+    fn test_redact_proxy_url() {
+        assert_eq!(
+            redact_proxy_url("http://user:secret@proxy.example:8080/path"),
+            "http://proxy.example:8080"
+        );
+        assert_eq!(redact_proxy_url("not a url"), "<unparseable-proxy>");
     }
 
     #[test]

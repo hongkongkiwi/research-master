@@ -204,8 +204,8 @@ fn format_author_chicago_remaining(author: &str) -> String {
 fn extract_year(date: Option<&str>) -> String {
     match date {
         Some(d) => {
-            if d.len() >= 4 {
-                d[..4].to_string()
+            if d.chars().count() >= 4 {
+                d.chars().take(4).collect()
             } else {
                 "n.d.".to_string()
             }
@@ -397,6 +397,11 @@ impl fmt::Display for CitationStyle {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_extract_year_multibyte() {
+        assert_eq!(super::extract_year(Some("２０２４")), "２０２４");
+    }
+
     use super::*;
     use crate::models::{Paper, PaperBuilder, SourceType};
 

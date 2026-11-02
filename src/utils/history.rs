@@ -4,7 +4,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::sync::Mutex;
+
+static HISTORY_LOCK: Mutex<()> = Mutex::new(());
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -58,9 +61,10 @@ impl HistoryService {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        if !self.path.exists() {
-            File::create(&self.path)?;
-        }
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
         Ok(())
     }
 
@@ -114,9 +118,24 @@ impl HistoryService {
 
     /// Append an entry to the history file
     fn append_entry(&self, entry: &HistoryEntry) -> io::Result<()> {
-        let mut file = fs::OpenOptions::new().append(true).open(&self.path)?;
-        let json = serde_json::to_string(entry)?;
-        writeln!(file, "{}", json)?;
+        let _guard = HISTORY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        self.ensure_file()?;
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&self.path)?;
+        let mut line = Vec::new();
+        if file.metadata()?.len() > 0 {
+            file.seek(SeekFrom::End(-1))?;
+            let mut last = [0];
+            file.read_exact(&mut last)?;
+            if last[0] != b'\n' {
+                line.push(b'\n');
+            }
+        }
+        serde_json::to_writer(&mut line, entry)?;
+        line.push(b'\n');
+        file.write_all(&line)?;
         Ok(())
     }
 
@@ -164,6 +183,7 @@ impl HistoryService {
 
     /// Clear history
     pub fn clear(&self) -> io::Result<()> {
+        let _guard = HISTORY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         if self.path.exists() {
             fs::remove_file(&self.path)?;
         }
@@ -331,6 +351,14 @@ mod tests {
         assert_eq!(downloads[0].query, "2301.00002");
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].query, "2301.00003");
+    }
+
+    #[test]
+    fn append_repairs_torn_tail() {
+        let (_dir, service) = test_service();
+        fs::write(service.path(), b"{broken").unwrap();
+        service.add_search("survives", None).unwrap();
+        assert_eq!(service.read_entries(10).unwrap()[0].query, "survives");
     }
 
     #[test]

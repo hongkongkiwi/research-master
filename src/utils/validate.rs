@@ -234,8 +234,19 @@ pub fn sanitize_filename(filename: &str) -> Result<String, ValidationError> {
     if sanitized.len() > MAX_FILENAME_LENGTH {
         let ext_pos = sanitized.rfind('.').unwrap_or(sanitized.len());
         let ext = sanitized.split_at(ext_pos).1;
-        let base_len = MAX_FILENAME_LENGTH.saturating_sub(ext.len());
-        sanitized = format!("{}{}", &sanitized[..base_len.min(sanitized.len())], ext);
+        if ext.len() <= MAX_FILENAME_LENGTH {
+            let mut base_len = MAX_FILENAME_LENGTH - ext.len();
+            while !sanitized.is_char_boundary(base_len) {
+                base_len -= 1;
+            }
+            sanitized = format!("{}{}", &sanitized[..base_len], ext);
+        } else {
+            let mut end = MAX_FILENAME_LENGTH;
+            while !sanitized.is_char_boundary(end) {
+                end -= 1;
+            }
+            sanitized.truncate(end);
+        }
     }
 
     if sanitized.is_empty() {
@@ -329,6 +340,17 @@ mod tests {
             sanitize_filename("Test Paper Final.pdf").unwrap(),
             "Test Paper Final.pdf"
         );
+    }
+
+    #[test]
+    fn test_sanitize_filename_long_unicode_and_extension() {
+        for name in [
+            format!("{}.pdf", "é".repeat(128)),
+            format!("a.{}", "é".repeat(128)),
+        ] {
+            let result = sanitize_filename(&name).unwrap();
+            assert!(result.len() <= 255);
+        }
     }
 
     #[test]

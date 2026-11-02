@@ -95,8 +95,8 @@ pub struct CircuitBreaker {
     /// Number of consecutive successes (in half-open state)
     success_count: Arc<AtomicUsize>,
 
-    /// Time when circuit was opened (Instant::now().elapsed() in milliseconds)
-    open_since_ms: std::sync::atomic::AtomicU64,
+    /// Time when the circuit was opened.
+    open_since: std::sync::Mutex<Option<Instant>>,
 
     /// Configuration
     config: CircuitBreakerConfig,
@@ -114,10 +114,10 @@ impl CircuitBreaker {
             state: std::sync::atomic::AtomicU8::new(CircuitState::Closed as u8),
             failure_count: Arc::new(AtomicUsize::new(0)),
             success_count: Arc::new(AtomicUsize::new(0)),
-            open_since_ms: std::sync::atomic::AtomicU64::new(0),
+            open_since: std::sync::Mutex::new(None),
             config: CircuitBreakerConfig {
                 failure_threshold,
-                success_threshold: 3,
+                success_threshold: 1,
                 open_duration,
             },
         }
@@ -147,12 +147,7 @@ impl CircuitBreaker {
 
     /// Get the time when the circuit was opened
     fn open_time(&self) -> Option<Instant> {
-        let ts = self.open_since_ms.load(Ordering::SeqCst);
-        if ts == 0 {
-            None
-        } else {
-            Some(Instant::now() - Duration::from_millis(ts))
-        }
+        *self.open_since.lock().expect("circuit mutex poisoned")
     }
 
     /// Record a success
@@ -172,7 +167,7 @@ impl CircuitBreaker {
                         .store(CircuitState::Closed as u8, Ordering::SeqCst);
                     self.failure_count.store(0, Ordering::SeqCst);
                     self.success_count.store(0, Ordering::SeqCst);
-                    self.open_since_ms.store(0, Ordering::SeqCst);
+                    *self.open_since.lock().expect("circuit mutex poisoned") = None;
                     tracing::info!(
                         "[circuit-breaker] {}: circuit closed (recovered)",
                         self.name
@@ -194,11 +189,8 @@ impl CircuitBreaker {
                 let count = self.failure_count.fetch_add(1, Ordering::SeqCst) + 1;
                 if count >= self.config.failure_threshold {
                     // Transition to open and record the time
+                    *self.open_since.lock().expect("circuit mutex poisoned") = Some(Instant::now());
                     self.state.store(CircuitState::Open as u8, Ordering::SeqCst);
-                    self.open_since_ms.store(
-                        Instant::now().elapsed().as_millis().try_into().unwrap_or(0),
-                        Ordering::SeqCst,
-                    );
                     tracing::warn!(
                         "[circuit-breaker] {}: circuit opened ({} failures)",
                         self.name,
@@ -208,6 +200,7 @@ impl CircuitBreaker {
             }
             CircuitState::HalfOpen => {
                 // Any failure in half-open goes back to open
+                *self.open_since.lock().expect("circuit mutex poisoned") = Some(Instant::now());
                 self.state.store(CircuitState::Open as u8, Ordering::SeqCst);
                 self.success_count.store(0, Ordering::SeqCst);
                 tracing::warn!(
@@ -258,9 +251,9 @@ impl CircuitBreaker {
             CircuitState::HalfOpen => {
                 // Allow one request to test recovery
                 match operation.await {
-                    Ok(_result) => {
+                    Ok(result) => {
                         self.record_success();
-                        CircuitResult::RetryAllowed("half-open: success".to_string())
+                        CircuitResult::Success(result)
                     }
                     Err(e) => {
                         self.record_failure();
@@ -277,7 +270,7 @@ impl CircuitBreaker {
             .store(CircuitState::Closed as u8, Ordering::SeqCst);
         self.failure_count.store(0, Ordering::SeqCst);
         self.success_count.store(0, Ordering::SeqCst);
-        self.open_since_ms.store(0, Ordering::SeqCst);
+        *self.open_since.lock().expect("circuit mutex poisoned") = None;
     }
 }
 
@@ -408,6 +401,21 @@ mod tests {
         // Execute should be rejected
         let result = breaker.execute(async { Ok::<i32, &str>(42) }).await;
         assert!(result.is_rejected());
+    }
+
+    #[tokio::test]
+    async fn test_timed_recovery_and_failed_probe_reopens() {
+        let breaker = CircuitBreaker::new("test", 1, Duration::from_millis(20));
+        breaker.record_failure();
+        assert_eq!(breaker.state(), CircuitState::Open);
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(breaker.state(), CircuitState::HalfOpen);
+        breaker.record_failure();
+        assert_eq!(breaker.state(), CircuitState::Open);
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(breaker.state(), CircuitState::HalfOpen);
+        breaker.record_success();
+        assert_eq!(breaker.state(), CircuitState::Closed);
     }
 
     #[test]

@@ -3,7 +3,7 @@
 use feed_rs::parser;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -141,10 +141,9 @@ impl WatchStore {
     pub fn update(&self, watch: &Watch) -> bool {
         let watch = watch.clone();
         match self.mutate(|watches| {
-            match watches
-                .iter_mut()
-                .find(|w| w.query.eq_ignore_ascii_case(&watch.query))
-            {
+            match watches.iter_mut().find(|w| {
+                w.query.eq_ignore_ascii_case(&watch.query) && w.created_at == watch.created_at
+            }) {
                 Some(existing) => {
                     *existing = watch;
                     (true, true)
@@ -200,7 +199,11 @@ impl WatchStore {
             body.push('\n');
         }
         let tmp = tmp_path(&self.path);
-        fs::write(&tmp, body).map_err(|e| format!("cannot write watch temp file: {e}"))?;
+        let mut file =
+            File::create(&tmp).map_err(|e| format!("cannot write watch temp file: {e}"))?;
+        file.write_all(body.as_bytes())
+            .and_then(|_| file.sync_all())
+            .map_err(|e| format!("cannot write watch temp file: {e}"))?;
         fs::rename(&tmp, &self.path).map_err(|e| format!("cannot replace watch file: {e}"))
     }
 }
@@ -232,14 +235,20 @@ fn default_path() -> PathBuf {
 }
 
 fn load_watches(path: &Path) -> Vec<Watch> {
-    let file = match File::open(path) {
-        Ok(file) => file,
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
         Err(_) => return Vec::new(),
     };
-    BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter_map(|line| serde_json::from_str::<Watch>(line.trim()).ok())
+    bytes
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| match serde_json::from_slice::<Watch>(line) {
+            Ok(watch) => Some(watch),
+            Err(e) => {
+                tracing::warn!("skipping corrupt watch line: {e}");
+                None
+            }
+        })
         .collect()
 }
 
@@ -319,7 +328,10 @@ pub async fn check_watch(
 
     let papers = parse_feed(&body)?;
     let (fresh, seen) = fresh_papers(&papers, watch.last_checked);
-    watch.last_checked = now();
+    // A full page may omit older papers, so retry the same window next time.
+    if max_results > 0 && papers.len() < max_results {
+        watch.last_checked = now();
+    }
     watch.last_seen_ids = seen;
     Ok(fresh)
 }
@@ -410,7 +422,6 @@ fn entry_to_paper(entry: &feed_rs::model::Entry) -> Result<Paper, SourceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
 
     fn sample_feed() -> &'static str {
         r#"<?xml version="1.0" encoding="UTF-8"?>

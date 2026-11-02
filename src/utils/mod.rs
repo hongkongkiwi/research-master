@@ -84,8 +84,8 @@ pub use display::{
 };
 pub use history::{HistoryEntry, HistoryEntryType, HistoryService};
 pub use http::{
-    apply_cli_proxy_args, create_proxy_config_from_cli, get_user_agent, HttpClient, ProxyConfig,
-    RateLimitedRequestBuilder, USER_AGENT_ENV_VAR,
+    apply_cli_proxy_args, create_proxy_config_from_cli, get_user_agent, set_global_timeout,
+    HttpClient, ProxyConfig, RateLimitedRequestBuilder, USER_AGENT_ENV_VAR,
 };
 pub use pdf::{
     extract_text, extract_text_simple, get_extraction_info, has_poppler, has_tesseract,
@@ -100,7 +100,7 @@ pub use update::{
     cleanup_temp_files, compute_sha256, detect_installation, download_and_extract_asset,
     fetch_and_verify_sha256, fetch_latest_release, fetch_sha256_signature, find_asset_for_platform,
     get_current_target, get_update_instructions, replace_binary, verify_gpg_signature,
-    verify_sha256, InstallationMethod, ReleaseAsset, ReleaseInfo,
+    verify_sha256, ExtractedAsset, InstallationMethod, ReleaseAsset, ReleaseInfo,
 };
 pub use validate::{
     sanitize_filename, sanitize_paper_id, validate_doi, validate_url, ValidationError,

@@ -50,6 +50,8 @@ pub struct SciteTallies {
 pub struct RetractionInfo {
     pub doi: String,
     pub is_retracted: bool,
+    #[serde(default, skip_serializing)]
+    pub is_known: bool,
     pub retraction_date: Option<String>,
     pub openalex_id: Option<String>,
     pub title: Option<String>,
@@ -219,7 +221,7 @@ struct OpenAlexWork {
     #[serde(default, rename = "display_name")]
     display_name: Option<String>,
     #[serde(default)]
-    is_retracted: bool,
+    is_retracted: Option<bool>,
     #[serde(default)]
     retraction_date: Option<String>,
 }
@@ -228,7 +230,8 @@ impl OpenAlexWork {
     fn into_retraction_info(self, doi: String) -> RetractionInfo {
         RetractionInfo {
             doi,
-            is_retracted: self.is_retracted,
+            is_known: self.is_retracted.is_some(),
+            is_retracted: self.is_retracted.unwrap_or(false),
             retraction_date: self.retraction_date,
             openalex_id: self.id,
             title: self.title.or(self.display_name),
@@ -284,6 +287,14 @@ mod tests {
             backoff_multiplier: 2.0,
             max_total_time: Duration::from_secs(10),
         }
+    }
+
+    #[test]
+    fn test_missing_retraction_status_is_unknown() {
+        let work: OpenAlexWork = serde_json::from_str(r#"{"id":"W1"}"#).unwrap();
+        let info = work.into_retraction_info("10.1/example".to_string());
+        assert!(!info.is_known);
+        assert!(!info.is_retracted);
     }
 
     #[test]

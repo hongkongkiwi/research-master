@@ -277,8 +277,17 @@ pub fn find_asset_for_platform(release: &ReleaseInfo) -> Option<&ReleaseAsset> {
         .find(|asset| asset.name.contains(target))
 }
 
+/// Paths to the downloaded archive and extracted executable.
+pub struct ExtractedAsset {
+    pub archive: PathBuf,
+    pub binary: PathBuf,
+}
+
 /// Download and extract a release asset
-pub async fn download_and_extract_asset(asset: &ReleaseAsset, temp_dir: &Path) -> Result<PathBuf> {
+pub async fn download_and_extract_asset(
+    asset: &ReleaseAsset,
+    temp_dir: &Path,
+) -> Result<ExtractedAsset> {
     let client = update_client()?;
 
     // Download the archive
@@ -311,7 +320,10 @@ pub async fn download_and_extract_asset(asset: &ReleaseAsset, temp_dir: &Path) -
         bail!("Unsupported archive format: {}", asset.name);
     };
 
-    Ok(binary_path)
+    Ok(ExtractedAsset {
+        archive: archive_path,
+        binary: binary_path,
+    })
 }
 
 #[cfg(unix)]
@@ -343,7 +355,13 @@ fn extract_tar_gz(archive_path: &Path, dest_dir: &Path) -> Result<PathBuf> {
         if path.is_file()
             && path
                 .file_name()
-                .map(|n| n.to_string_lossy().starts_with("research-master"))
+                .map(|n| {
+                    n == if cfg!(windows) {
+                        "research-master.exe"
+                    } else {
+                        "research-master"
+                    }
+                })
                 .unwrap_or(false)
         {
             // Make executable
@@ -362,6 +380,14 @@ fn extract_tar_gz(_archive_path: &Path, _dest_dir: &Path) -> Result<PathBuf> {
     bail!("tar.gz extraction on Windows requires additional dependencies")
 }
 
+#[cfg(any(windows, test))]
+fn safe_archive_path(name: &str) -> bool {
+    !name.starts_with(['/', '\\'])
+        && !name
+            .split(['/', '\\'])
+            .any(|part| part.contains("..") || part.contains(':'))
+}
+
 #[cfg(windows)]
 fn extract_zip(archive_path: &Path, dest_dir: &Path) -> Result<PathBuf> {
     use zip::ZipArchive;
@@ -371,11 +397,18 @@ fn extract_zip(archive_path: &Path, dest_dir: &Path) -> Result<PathBuf> {
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
+        if !safe_archive_path(entry.name()) {
+            bail!("Unsafe archive entry: {}", entry.name());
+        }
         let out_path = dest_dir.join(entry.name());
 
         if entry.is_dir() {
             fs::create_dir_all(&out_path)?;
-        } else {
+        } else if entry.is_file()
+            && entry
+                .unix_mode()
+                .is_none_or(|mode| mode & 0o170000 == 0 || mode & 0o170000 == 0o100000)
+        {
             if let Some(parent) = out_path.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -391,7 +424,13 @@ fn extract_zip(archive_path: &Path, dest_dir: &Path) -> Result<PathBuf> {
         if path.is_file()
             && path
                 .file_name()
-                .map(|n| n.to_string_lossy().starts_with("research-master"))
+                .map(|n| {
+                    n == if cfg!(windows) {
+                        "research-master.exe"
+                    } else {
+                        "research-master"
+                    }
+                })
                 .unwrap_or(false)
         {
             return Ok(path);
@@ -642,6 +681,14 @@ pub fn verify_gpg_signature(sha256sums_path: &Path, signature: &str) -> Result<b
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_safe_archive_path_rejects_traversal() {
+        assert!(!super::safe_archive_path("../evil"));
+        assert!(!super::safe_archive_path("C:\\evil"));
+        assert!(!super::safe_archive_path("/evil"));
+        assert!(super::safe_archive_path("bin/research-master.exe"));
+    }
+
     use super::*;
     use std::fs;
     use tempfile::tempdir;

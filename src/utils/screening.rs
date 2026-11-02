@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -308,7 +308,11 @@ impl ScreeningStore {
             body.push('\n');
         }
         let tmp = tmp_path(&self.path);
-        fs::write(&tmp, body).map_err(|e| format!("cannot write screenings temp file: {e}"))?;
+        let mut file =
+            File::create(&tmp).map_err(|e| format!("cannot write screenings temp file: {e}"))?;
+        file.write_all(body.as_bytes())
+            .and_then(|_| file.sync_all())
+            .map_err(|e| format!("cannot write screenings temp file: {e}"))?;
         fs::rename(&tmp, &self.path).map_err(|e| format!("cannot replace screenings file: {e}"))
     }
 }
@@ -369,14 +373,20 @@ fn new_session_id() -> String {
 }
 
 fn load_sessions(path: &Path) -> Vec<SessionRecord> {
-    let file = match File::open(path) {
-        Ok(file) => file,
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
         Err(_) => return Vec::new(),
     };
-    BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter_map(|line| serde_json::from_str::<SessionRecord>(line.trim()).ok())
+    bytes
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| match serde_json::from_slice::<SessionRecord>(line) {
+            Ok(session) => Some(session),
+            Err(e) => {
+                tracing::warn!("skipping corrupt screening line: {e}");
+                None
+            }
+        })
         .collect()
 }
 
@@ -415,9 +425,9 @@ fn stats_patterns() -> &'static StatsPatterns {
         )
         .unwrap(),
         // p-value: "p = .01", "p < 0.001", "p=0.04"
-        p_value: Regex::new(r"\b[pP]\s*(?:=|<|≤)\s*\.?\d+(?:\.\d+)?").unwrap(),
+        p_value: Regex::new(r"\b[pP]\s*(?:=|<|≤)\s*\.?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?").unwrap(),
         // Sample size: "N = 234", "n = 45"
-        sample_size: Regex::new(r"\b[nN]\s*=\s*\d+").unwrap(),
+        sample_size: Regex::new(r"\b[nN]\s*=\s*(?:\d{1,3}(?:,\d{3})+|\d+)").unwrap(),
     })
 }
 
@@ -429,32 +439,42 @@ pub fn extract_statistics(text: &str) -> Vec<String> {
     // patterns match negative values.
     let text = text.replace('\u{2212}', "-");
     let patterns = stats_patterns();
-    let mut found: Vec<String> = Vec::new();
-    let mut add = |matched: &str| {
-        let value = matched.trim().to_string();
+    let mut matches = Vec::new();
+    for pattern in [
+        &patterns.effect_size,
+        &patterns.correlation,
+        &patterns.ratio,
+        &patterns.confidence_interval,
+        &patterns.p_value,
+        &patterns.sample_size,
+    ] {
+        for m in pattern.find_iter(&text) {
+            if std::ptr::eq(pattern, &patterns.p_value)
+                || std::ptr::eq(pattern, &patterns.sample_size)
+            {
+                let rest = &text[m.end()..];
+                let mut chars = rest.chars();
+                if chars.next().is_some_and(|c| {
+                    c.is_alphanumeric()
+                        || ((c == ',' || c == '.')
+                            && chars.next().is_some_and(|next| next.is_ascii_digit()))
+                }) {
+                    continue;
+                }
+            }
+            matches.push((m.start(), m.as_str().trim().to_string()));
+        }
+    }
+    matches.sort_by_key(|(position, _)| *position);
+    let mut found = Vec::new();
+    for (_, value) in matches {
         if !found.contains(&value) {
             found.push(value);
         }
-    };
-    for m in patterns.effect_size.find_iter(&text) {
-        add(m.as_str());
+        if found.len() == 20 {
+            break;
+        }
     }
-    for m in patterns.correlation.find_iter(&text) {
-        add(m.as_str());
-    }
-    for m in patterns.ratio.find_iter(&text) {
-        add(m.as_str());
-    }
-    for m in patterns.confidence_interval.find_iter(&text) {
-        add(m.as_str());
-    }
-    for m in patterns.p_value.find_iter(&text) {
-        add(m.as_str());
-    }
-    for m in patterns.sample_size.find_iter(&text) {
-        add(m.as_str());
-    }
-    found.truncate(20);
     found
 }
 
@@ -642,6 +662,15 @@ mod tests {
                 "missing {expected} in {stats:?}"
             );
         }
+    }
+
+    #[test]
+    fn statistics_keep_full_numbers_and_source_order() {
+        assert_eq!(
+            extract_statistics("N = 1,234; p = 1e-6; d = 0.5; p = 1E-5"),
+            vec!["N = 1,234", "p = 1e-6", "d = 0.5", "p = 1E-5"]
+        );
+        assert!(extract_statistics("p = 1e-; N = 1,23").is_empty());
     }
 
     #[test]

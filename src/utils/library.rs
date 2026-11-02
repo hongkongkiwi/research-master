@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,6 +16,24 @@ use crate::models::Paper;
 pub enum AddedOrUpdated {
     Added,
     Updated,
+}
+
+/// Retraction update to apply after a lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RetractionWrite {
+    Overwrite(String, Option<String>),
+    PreserveConfirmedOnFailure,
+}
+
+/// Result of a scoped retraction update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RetractionWriteOutcome {
+    Applied {
+        status: String,
+        date: Option<String>,
+    },
+    SkippedDoiMismatch,
+    SkippedScopeNotFound,
 }
 
 /// A saved paper plus its library metadata.
@@ -209,6 +227,66 @@ impl PaperLibrary {
         })
     }
 
+    /// Update one exact collection membership if its DOI still matches the lookup.
+    /// `None` selects only the uncollected membership.
+    pub fn set_retraction_scoped(
+        &self,
+        id: &str,
+        collection: Option<&str>,
+        expected_doi: Option<&str>,
+        status: RetractionWrite,
+        checked_at: String,
+    ) -> Result<RetractionWriteOutcome, String> {
+        let id = id.trim();
+        let id_lower = id.to_lowercase();
+        self.mutate(|entries| {
+            let mut candidates = entries
+                .iter_mut()
+                .filter(|entry| {
+                    !id.is_empty()
+                        && entry.collection.as_deref() == collection
+                        && matches_id(entry, id, &id_lower)
+                })
+                .peekable();
+            if candidates.peek().is_none() {
+                return (false, RetractionWriteOutcome::SkippedScopeNotFound);
+            }
+            let entry = candidates.find(|entry| {
+                expected_doi.is_none_or(|doi| {
+                    entry
+                        .paper
+                        .doi
+                        .as_deref()
+                        .map(str::trim)
+                        .is_some_and(|current| current.eq_ignore_ascii_case(doi.trim()))
+                })
+            });
+            let Some(entry) = entry else {
+                return (false, RetractionWriteOutcome::SkippedDoiMismatch);
+            };
+            match status {
+                RetractionWrite::Overwrite(status, date) => {
+                    entry.retraction_status = Some(status);
+                    entry.retraction_date = date;
+                }
+                RetractionWrite::PreserveConfirmedOnFailure => {
+                    if entry.retraction_status.as_deref() != Some("retracted") {
+                        entry.retraction_status = Some("unknown".to_string());
+                        entry.retraction_date = None;
+                    }
+                }
+            }
+            entry.retraction_checked_at = Some(checked_at);
+            (
+                true,
+                RetractionWriteOutcome::Applied {
+                    status: entry.retraction_status.clone().expect("status set above"),
+                    date: entry.retraction_date.clone(),
+                },
+            )
+        })
+    }
+
     /// Remove by paper_id or DOI, optionally scoped to one collection.
     pub fn remove_paper(&self, id: &str, collection: Option<&str>) -> bool {
         let id = id.trim();
@@ -354,7 +432,11 @@ impl PaperLibrary {
             body.push('\n');
         }
         let tmp = tmp_path(&self.path);
-        fs::write(&tmp, body).map_err(|e| format!("cannot write library temp file: {e}"))?;
+        let mut file =
+            File::create(&tmp).map_err(|e| format!("cannot write library temp file: {e}"))?;
+        file.write_all(body.as_bytes())
+            .and_then(|_| file.sync_all())
+            .map_err(|e| format!("cannot write library temp file: {e}"))?;
         fs::rename(&tmp, &self.path).map_err(|e| format!("cannot replace library file: {e}"))
     }
 }
@@ -386,27 +468,36 @@ fn default_path() -> PathBuf {
 }
 
 fn load_entries(path: &Path) -> Vec<LibraryEntry> {
-    let file = match File::open(path) {
-        Ok(file) => file,
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
         Err(_) => return Vec::new(),
     };
-    BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter_map(|line| serde_json::from_str::<LibraryEntry>(line.trim()).ok())
+    bytes
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| match serde_json::from_slice::<LibraryEntry>(line) {
+            Ok(entry) => Some(entry),
+            Err(e) => {
+                tracing::warn!("skipping corrupt library line: {e}");
+                None
+            }
+        })
         .collect()
 }
 
-/// Identity for dedup: DOI when both sides have one (case-insensitive), else paper_id.
+/// Match DOI when present, or source-local ID when neither paper has a DOI.
 fn same_paper(a: &Paper, b: &Paper) -> bool {
-    if let (Some(x), Some(y)) = (&a.doi, &b.doi) {
-        let x = x.trim();
-        let y = y.trim();
-        if !x.is_empty() && x.eq_ignore_ascii_case(y) {
-            return true;
+    let doi_a = a.doi.as_deref().map(str::trim).filter(|d| !d.is_empty());
+    let doi_b = b.doi.as_deref().map(str::trim).filter(|d| !d.is_empty());
+    match (doi_a, doi_b) {
+        (Some(x), Some(y)) => x.eq_ignore_ascii_case(y),
+        (None, None) => {
+            a.source == b.source
+                && !a.paper_id.trim().is_empty()
+                && a.paper_id.trim() == b.paper_id.trim()
         }
+        _ => false,
     }
-    !a.paper_id.trim().is_empty() && a.paper_id.trim() == b.paper_id.trim()
 }
 
 fn matches_id(entry: &LibraryEntry, id: &str, id_lower: &str) -> bool {
@@ -516,7 +607,6 @@ fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
 
     fn temp_path(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -766,6 +856,109 @@ mod tests {
         assert_eq!(entry.retraction_status, None);
         assert_eq!(entry.retraction_date, None);
         assert_eq!(entry.retraction_checked_at, None);
+    }
+
+    #[test]
+    fn scoped_retraction_rejects_wrong_doi_without_changes() {
+        let path = temp_path("retraction-mismatch");
+        let library = PaperLibrary::from_path(path.clone());
+        library
+            .add_paper(
+                paper("a1", "Alpha", Some("10.1000/current")),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        assert_eq!(
+            library
+                .set_retraction_scoped(
+                    "a1",
+                    None,
+                    Some("10.1000/old"),
+                    RetractionWrite::Overwrite("retracted".into(), None),
+                    "now".into()
+                )
+                .unwrap(),
+            RetractionWriteOutcome::SkippedDoiMismatch
+        );
+        assert_eq!(fs::read(path).unwrap(), before);
+        assert_eq!(library.list(None)[0].retraction_status, None);
+    }
+
+    #[test]
+    fn scoped_retraction_uncollected_leaves_collection_untouched() {
+        let library = PaperLibrary::from_path(temp_path("retraction-scope"));
+        for collection in [None, Some("reading".to_string())] {
+            library
+                .add_paper(
+                    paper("a1", "Alpha", Some("10.1000/x")),
+                    collection,
+                    Vec::new(),
+                )
+                .unwrap();
+        }
+        assert!(matches!(
+            library
+                .set_retraction_scoped(
+                    "a1",
+                    None,
+                    Some("10.1000/x"),
+                    RetractionWrite::Overwrite("retracted".into(), None),
+                    "now".into()
+                )
+                .unwrap(),
+            RetractionWriteOutcome::Applied { .. }
+        ));
+        let entries = library.list(None);
+        assert_eq!(
+            entries
+                .iter()
+                .find(|e| e.collection.is_none())
+                .unwrap()
+                .retraction_status
+                .as_deref(),
+            Some("retracted")
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .find(|e| e.collection.is_some())
+                .unwrap()
+                .retraction_status,
+            None
+        );
+    }
+
+    #[test]
+    fn scoped_retraction_failure_preserves_confirmed_retraction() {
+        let path = temp_path("retraction-preserve");
+        let library = PaperLibrary::from_path(path.clone());
+        library
+            .add_paper(paper("a1", "Alpha", Some("10.1000/x")), None, Vec::new())
+            .unwrap();
+        library
+            .set_retraction("a1", None, "retracted", Some("2024-06-01"), "before")
+            .unwrap();
+        assert_eq!(
+            library
+                .set_retraction_scoped(
+                    "a1",
+                    None,
+                    Some("10.1000/x"),
+                    RetractionWrite::PreserveConfirmedOnFailure,
+                    "after".into()
+                )
+                .unwrap(),
+            RetractionWriteOutcome::Applied {
+                status: "retracted".into(),
+                date: Some("2024-06-01".into())
+            }
+        );
+        let entry = &PaperLibrary::from_path(path).list(None)[0];
+        assert_eq!(entry.retraction_status.as_deref(), Some("retracted"));
+        assert_eq!(entry.retraction_date.as_deref(), Some("2024-06-01"));
+        assert_eq!(entry.retraction_checked_at.as_deref(), Some("after"));
     }
 
     #[test]

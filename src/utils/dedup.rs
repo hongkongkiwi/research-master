@@ -60,11 +60,8 @@ fn are_duplicates(a: &Paper, b: &Paper) -> bool {
         return false;
     }
 
-    // Check DOI match (strongest signal)
-    if let (Some(doi_a), Some(doi_b)) = (&a.doi, &b.doi) {
-        if doi_a.to_lowercase() == doi_b.to_lowercase() {
-            return true;
-        }
+    if let (Some(doi_a), Some(doi_b)) = (normalized_doi(a), normalized_doi(b)) {
+        return doi_a == doi_b;
     }
 
     // Check title similarity
@@ -87,6 +84,15 @@ fn are_duplicates(a: &Paper, b: &Paper) -> bool {
     }
 
     false
+}
+
+fn normalized_doi(paper: &Paper) -> Option<String> {
+    paper
+        .doi
+        .as_deref()
+        .map(str::trim)
+        .filter(|doi| !doi.is_empty())
+        .map(str::to_lowercase)
 }
 
 /// Check if authors approximately match
@@ -192,8 +198,7 @@ pub fn fast_deduplicate_papers(papers: Vec<Paper>, strategy: DuplicateStrategy) 
     // First pass: build hash maps (O(n))
     for (idx, paper) in papers.iter().enumerate() {
         // Index by lowercase DOI
-        if let Some(ref doi) = paper.doi {
-            let doi_key = doi.to_lowercase();
+        if let Some(doi_key) = normalized_doi(paper) {
             doi_map.entry(doi_key).or_default().push(idx);
         }
 
@@ -251,11 +256,9 @@ pub fn fast_deduplicate_papers(papers: Vec<Paper>, strategy: DuplicateStrategy) 
                         continue;
                     }
 
-                    // Check if already marked as DOI duplicate
-                    if let (Some(doi_i), Some(doi_j)) = (&paper_i.doi, &paper_j.doi) {
-                        if doi_i.to_lowercase() == doi_j.to_lowercase() {
-                            continue; // Already handled by DOI matching
-                        }
+                    // DOI matches are handled above; conflicting DOIs cannot match by title.
+                    if let (Some(_), Some(_)) = (normalized_doi(paper_i), normalized_doi(paper_j)) {
+                        continue;
                     }
 
                     // Additional similarity check for confidence
@@ -308,6 +311,33 @@ fn title_similarity_confidence(a: &Paper, b: &Paper) -> bool {
 mod tests {
     use super::*;
     use crate::models::{PaperBuilder, SourceType};
+
+    #[test]
+    fn empty_and_conflicting_dois_do_not_cause_duplicates() {
+        let make = |id, title, source, doi: &str| {
+            PaperBuilder::new(id, title, "https://example.com", source)
+                .doi(doi)
+                .build()
+        };
+        let empty = vec![
+            make("1", "Apples", SourceType::Arxiv, " "),
+            make("2", "Zebras", SourceType::OpenAlex, ""),
+        ];
+        let conflict = vec![
+            make("1", "Identical title", SourceType::Arxiv, "10/a"),
+            make("2", "Identical title", SourceType::OpenAlex, "10/b"),
+        ];
+        for papers in [empty, conflict] {
+            assert_eq!(
+                deduplicate_papers(papers.clone(), DuplicateStrategy::First).len(),
+                2
+            );
+            assert_eq!(
+                fast_deduplicate_papers(papers, DuplicateStrategy::First).len(),
+                2
+            );
+        }
+    }
 
     #[test]
     fn test_normalize_title() {
