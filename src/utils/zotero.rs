@@ -344,9 +344,7 @@ fn body_snippet(body: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Serializes Zotero env access. A tokio Mutex because the guard must
-    /// span await points in async tests (same pattern as handlers_library).
-    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    use crate::test_support::{EnvSnapshot, ENV_LOCK};
 
     const ZOTERO_ENV_VARS: [&str; 4] = [
         "ZOTERO_API_KEY",
@@ -439,6 +437,18 @@ mod tests {
     #[tokio::test]
     async fn save_posts_item_array_and_parses_key() {
         let _guard = ENV_LOCK.lock().await;
+        let _env = EnvSnapshot::new(&[
+            "ZOTERO_API_KEY",
+            "ZOTERO_USER_ID",
+            "ZOTERO_GROUP_ID",
+            "RESEARCH_MASTER_ZOTERO_API_URL",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ]);
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("POST", "/users/12345/items")
@@ -486,6 +496,18 @@ mod tests {
     #[tokio::test]
     async fn save_targets_group_library_when_group_id_set() {
         let _guard = ENV_LOCK.lock().await;
+        let _env = EnvSnapshot::new(&[
+            "ZOTERO_API_KEY",
+            "ZOTERO_USER_ID",
+            "ZOTERO_GROUP_ID",
+            "RESEARCH_MASTER_ZOTERO_API_URL",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ]);
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("POST", "/groups/99/items")
@@ -516,6 +538,18 @@ mod tests {
     #[tokio::test]
     async fn save_error_includes_status_and_body_snippet() {
         let _guard = ENV_LOCK.lock().await;
+        let _env = EnvSnapshot::new(&[
+            "ZOTERO_API_KEY",
+            "ZOTERO_USER_ID",
+            "ZOTERO_GROUP_ID",
+            "RESEARCH_MASTER_ZOTERO_API_URL",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ]);
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("POST", "/users/12345/items")
@@ -549,6 +583,18 @@ mod tests {
     #[tokio::test]
     async fn save_without_api_key_names_key_url() {
         let _guard = ENV_LOCK.lock().await;
+        let _env = EnvSnapshot::new(&[
+            "ZOTERO_API_KEY",
+            "ZOTERO_USER_ID",
+            "ZOTERO_GROUP_ID",
+            "RESEARCH_MASTER_ZOTERO_API_URL",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ]);
         let saved_proxies = clear_proxy_env();
         for var in ZOTERO_ENV_VARS {
             std::env::remove_var(var);
@@ -568,6 +614,18 @@ mod tests {
     #[tokio::test]
     async fn save_without_library_scope_names_both_env_vars() {
         let _guard = ENV_LOCK.lock().await;
+        let _env = EnvSnapshot::new(&[
+            "ZOTERO_API_KEY",
+            "ZOTERO_USER_ID",
+            "ZOTERO_GROUP_ID",
+            "RESEARCH_MASTER_ZOTERO_API_URL",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ]);
         let saved_proxies = clear_proxy_env();
         for var in ZOTERO_ENV_VARS {
             std::env::remove_var(var);
@@ -588,6 +646,18 @@ mod tests {
     #[tokio::test]
     async fn search_parses_items_both_creator_shapes() {
         let _guard = ENV_LOCK.lock().await;
+        let _env = EnvSnapshot::new(&[
+            "ZOTERO_API_KEY",
+            "ZOTERO_USER_ID",
+            "ZOTERO_GROUP_ID",
+            "RESEARCH_MASTER_ZOTERO_API_URL",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ]);
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("GET", "/users/12345/items?q=attention&limit=2&format=json")
@@ -645,6 +715,18 @@ mod tests {
     #[tokio::test]
     async fn library_kind_reports_user_then_group() {
         let _guard = ENV_LOCK.lock().await;
+        let _env = EnvSnapshot::new(&[
+            "ZOTERO_API_KEY",
+            "ZOTERO_USER_ID",
+            "ZOTERO_GROUP_ID",
+            "RESEARCH_MASTER_ZOTERO_API_URL",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ]);
         let saved_proxies = clear_proxy_env();
         for var in ZOTERO_ENV_VARS {
             std::env::remove_var(var);

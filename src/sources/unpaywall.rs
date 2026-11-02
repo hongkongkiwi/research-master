@@ -27,7 +27,10 @@ impl UnpaywallSource {
     pub fn new() -> Result<Self, SourceError> {
         let email = std::env::var("UNPAYWALL_EMAIL").ok();
         Ok(Self {
-            client: Arc::new(HttpClient::new()?),
+            client: Arc::new(HttpClient::for_source(
+                "unpaywall",
+                &crate::utils::get_user_agent(),
+            )?),
             email,
         })
     }

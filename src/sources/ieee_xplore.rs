@@ -25,9 +25,12 @@ pub struct IeeeXploreSource {
 
 impl IeeeXploreSource {
     pub fn new() -> Result<Self, SourceError> {
-        let api_key = std::env::var("IEEE_XPLORE_API_KEY").ok();
+        let api_key = crate::config::resolve_api_key("IEEE_XPLORE_API_KEY");
         Ok(Self {
-            client: Arc::new(HttpClient::new()?),
+            client: Arc::new(HttpClient::for_source(
+                "ieee_xplore",
+                &crate::utils::get_user_agent(),
+            )?),
             api_key,
         })
     }

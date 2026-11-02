@@ -25,7 +25,7 @@ impl OrcidSource {
     pub fn new() -> Result<Self, SourceError> {
         let user_agent = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
         Ok(Self {
-            client: Arc::new(HttpClient::with_rate_limit(user_agent, 2)?),
+            client: Arc::new(HttpClient::for_source("orcid", user_agent)?),
         })
     }
 

@@ -17,12 +17,6 @@ const SEMANTIC_API_BASE: &str = "https://api.semanticscholar.org/graph/v1";
 const PAPER_FIELDS: &str =
     "title,url,abstract,authors,year,externalIds,openAccessPdf,citationCount,publicationDate,venue";
 
-/// Environment variable for Semantic Scholar rate limit (requests per second)
-const SEMANTIC_SCHOLAR_RATE_LIMIT_ENV: &str = "SEMANTIC_SCHOLAR_RATE_LIMIT";
-
-/// Default rate limit for Semantic Scholar (1 request per second without API key)
-const DEFAULT_SEMANTIC_RATE_LIMIT: u32 = 1;
-
 /// Environment variable for Semantic Scholar circuit breaker failure threshold
 const SEMANTIC_SCHOLAR_CIRCUIT_BREAKER_THRESHOLD_ENV: &str =
     "SEMANTIC_SCHOLAR_CIRCUIT_BREAKER_THRESHOLD";
@@ -42,14 +36,6 @@ pub struct SemanticScholarSource {
 }
 
 impl SemanticScholarSource {
-    /// Get the rate limit from environment variable or use default
-    fn get_rate_limit() -> u32 {
-        std::env::var(SEMANTIC_SCHOLAR_RATE_LIMIT_ENV)
-            .ok()
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(DEFAULT_SEMANTIC_RATE_LIMIT)
-    }
-
     /// Get the circuit breaker failure threshold from environment variable or use default
     fn get_circuit_breaker_threshold() -> usize {
         std::env::var(SEMANTIC_SCHOLAR_CIRCUIT_BREAKER_THRESHOLD_ENV)
@@ -60,13 +46,12 @@ impl SemanticScholarSource {
 
     /// Create a new Semantic Scholar source
     pub fn new() -> Result<Self, SourceError> {
-        let rate_limit = Self::get_rate_limit();
         let user_agent = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
         let circuit_threshold = Self::get_circuit_breaker_threshold();
 
         Ok(Self {
-            client: Arc::new(HttpClient::with_rate_limit(user_agent, rate_limit)?),
-            api_key: std::env::var("SEMANTIC_SCHOLAR_API_KEY").ok(),
+            client: Arc::new(HttpClient::for_source("semantic", user_agent)?),
+            api_key: crate::config::resolve_api_key("SEMANTIC_SCHOLAR_API_KEY"),
             circuit_breaker: Arc::new(CircuitBreaker::new(
                 "semantic",
                 circuit_threshold,
@@ -78,12 +63,11 @@ impl SemanticScholarSource {
     /// Create with an API key (optional, for higher rate limits)
     #[allow(dead_code)]
     pub fn with_api_key(api_key: String) -> Result<Self, SourceError> {
-        let rate_limit = Self::get_rate_limit();
         let user_agent = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
         let circuit_threshold = Self::get_circuit_breaker_threshold();
 
         Ok(Self {
-            client: Arc::new(HttpClient::with_rate_limit(user_agent, rate_limit)?),
+            client: Arc::new(HttpClient::for_source("semantic", user_agent)?),
             api_key: Some(api_key),
             circuit_breaker: Arc::new(CircuitBreaker::new(
                 "semantic",
@@ -236,7 +220,11 @@ impl Source for SemanticScholarSource {
     }
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchResponse, SourceError> {
-        let url = Self::search_url(&query.query, query.max_results);
+        let url = format!(
+            "{}&offset={}",
+            Self::search_url(&query.query, query.max_results),
+            query.offset
+        );
 
         // Check circuit breaker before making request
         if !self.circuit_breaker.can_request() {

@@ -41,7 +41,10 @@ pub struct ClinicalTrialsSource {
 impl ClinicalTrialsSource {
     pub fn new() -> Result<Self, SourceError> {
         Ok(Self {
-            client: Arc::new(HttpClient::new()?),
+            client: Arc::new(HttpClient::for_source(
+                "clinical_trials",
+                &crate::utils::get_user_agent(),
+            )?),
         })
     }
 

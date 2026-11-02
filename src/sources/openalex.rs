@@ -32,11 +32,12 @@ impl OpenAlexSource {
     /// Create a new OpenAlex source
     pub fn new() -> Result<Self, SourceError> {
         Ok(Self {
-            client: Arc::new(HttpClient::new()?),
+            client: Arc::new(HttpClient::for_source(
+                "openalex",
+                &crate::utils::get_user_agent(),
+            )?),
             email: std::env::var("OPENALEX_EMAIL").ok(),
-            api_key: std::env::var("OPENALEX_API_KEY")
-                .ok()
-                .filter(|k| !k.is_empty()),
+            api_key: crate::config::resolve_api_key("OPENALEX_API_KEY").filter(|k| !k.is_empty()),
         })
     }
 
@@ -50,11 +51,9 @@ impl OpenAlexSource {
             email
         );
         Ok(Self {
-            client: Arc::new(HttpClient::with_user_agent(&user_agent)?),
+            client: Arc::new(HttpClient::for_source("openalex", &user_agent)?),
             email: Some(email),
-            api_key: std::env::var("OPENALEX_API_KEY")
-                .ok()
-                .filter(|k| !k.is_empty()),
+            api_key: crate::config::resolve_api_key("OPENALEX_API_KEY").filter(|k| !k.is_empty()),
         })
     }
 
@@ -218,6 +217,11 @@ impl Source for OpenAlexSource {
                 query.max_results
             )
         };
+
+        url.push_str(&format!(
+            "&page={}",
+            query.offset / query.max_results.max(1) + 1
+        ));
 
         // Add year filter if specified
         let filter_separator = if url.contains("filter=") {

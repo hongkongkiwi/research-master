@@ -26,7 +26,7 @@ impl CrossRefSource {
             env!("CARGO_PKG_VERSION")
         );
         Ok(Self {
-            client: Arc::new(HttpClient::with_user_agent(&user_agent)?),
+            client: Arc::new(HttpClient::for_source("crossref", &user_agent)?),
         })
     }
     fn parse_work(item: &serde_json::Value) -> Option<Paper> {
@@ -97,10 +97,11 @@ impl Source for CrossRefSource {
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchResponse, SourceError> {
         let mut url = format!(
-            "{}/works?query={}&rows={}",
+            "{}/works?query={}&rows={}&offset={}",
             CROSSREF_API_BASE,
             urlencoding::encode(&query.query),
-            query.max_results
+            query.max_results,
+            query.offset
         );
 
         // Add year filter if specified

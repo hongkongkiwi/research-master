@@ -91,6 +91,32 @@ pub struct ApiKeysConfig {
 
     #[serde(default)]
     pub core: Option<String>,
+    #[serde(default)]
+    pub exa: Option<String>,
+    #[serde(default)]
+    pub tavily: Option<String>,
+    #[serde(default)]
+    pub brave: Option<String>,
+    #[serde(default)]
+    pub github: Option<String>,
+    #[serde(default)]
+    pub openalex: Option<String>,
+    #[serde(default)]
+    pub ieee_xplore: Option<String>,
+    #[serde(default)]
+    pub acm: Option<String>,
+    #[serde(default)]
+    pub springer: Option<String>,
+    #[serde(default)]
+    pub dimensions: Option<String>,
+    #[serde(default)]
+    pub jstor: Option<String>,
+    #[serde(default)]
+    pub mdpi: Option<String>,
+    #[serde(default)]
+    pub ads: Option<String>,
+    #[serde(default)]
+    pub base: Option<String>,
 }
 
 /// Downloads configuration

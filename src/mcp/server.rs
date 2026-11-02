@@ -126,6 +126,10 @@ impl McpServer {
             http_middleware: Some(std::sync::Arc::new(
                 crate::mcp::http_auth::BearerTokenMiddleware::chain_from_env().unwrap_or_default(),
             )),
+            // No event store: pmcp's GET replay path sits outside the bearer
+            // middleware and replays stored responses on an unknown
+            // Last-Event-ID. Without a store there is nothing to replay.
+            event_store: None,
             ..Default::default()
         };
         self.run_http_with_config(addr, config).await

@@ -30,7 +30,10 @@ impl ArxivSource {
     /// Create a new arXiv source
     pub fn new() -> Result<Self, SourceError> {
         Ok(Self {
-            client: Arc::new(HttpClient::new()?),
+            client: Arc::new(HttpClient::for_source(
+                "arxiv",
+                &crate::utils::get_user_agent(),
+            )?),
         })
     }
 
@@ -240,10 +243,11 @@ impl Source for ArxivSource {
         };
 
         let url = format!(
-            "{}?search_query={}&max_results={}&sortBy={}&sortOrder={}",
+            "{}?search_query={}&max_results={}&start={}&sortBy={}&sortOrder={}",
             ARXIV_API_URL,
             urlencoding::encode(&search_query),
             max_results,
+            query.offset,
             sort_by,
             sort_order
         );
@@ -379,6 +383,11 @@ impl Source for ArxivSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_source_constructor() {
+        assert!(ArxivSource::new().is_ok());
+    }
 
     #[test]
     fn test_parse_id() {

@@ -26,7 +26,10 @@ pub struct PmcSource {
 impl PmcSource {
     pub fn new() -> Result<Self, SourceError> {
         Ok(Self {
-            client: Arc::new(HttpClient::new()?),
+            client: Arc::new(HttpClient::for_source(
+                "pmc",
+                &crate::utils::get_user_agent(),
+            )?),
         })
     }
 

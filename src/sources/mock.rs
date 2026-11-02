@@ -9,10 +9,8 @@ use crate::sources::{Source, SourceCapabilities, SourceError};
 /// A mock source for testing that returns predefined responses.
 #[derive(Debug, Default, Clone)]
 pub struct MockSource {
-    // Note: Clone won't deep clone the mutex contents, but for testing
-    // this is acceptable as tests typically use the original reference.
     search_response: std::sync::Arc<Mutex<Option<SearchResponse>>>,
-    search_count: std::sync::Arc<Mutex<usize>>,
+    search_calls: std::sync::Arc<Mutex<Vec<SearchQuery>>>,
 }
 
 impl MockSource {
@@ -25,16 +23,19 @@ impl MockSource {
     pub fn set_search_response(&self, response: SearchResponse) {
         let mut guard = self.search_response.lock().unwrap();
         *guard = Some(response);
-        // Reset search count when setting a new response
-        *self.search_count.lock().unwrap() = 0;
+        self.search_calls.lock().unwrap().clear();
     }
 
     /// Clear the configured response.
     pub fn clear_response(&self) {
         let mut guard = self.search_response.lock().unwrap();
         *guard = None;
-        // Reset search count when clearing
-        *self.search_count.lock().unwrap() = 0;
+        self.search_calls.lock().unwrap().clear();
+    }
+
+    /// Return the recorded search queries.
+    pub fn search_calls(&self) -> Vec<SearchQuery> {
+        self.search_calls.lock().unwrap().clone()
     }
 }
 
@@ -53,21 +54,19 @@ impl Source for MockSource {
     }
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchResponse, SourceError> {
-        // Increment search count
-        let mut count = self.search_count.lock().unwrap();
-        *count += 1;
-        let is_first_call = *count == 1;
-        drop(count);
-
+        self.search_calls.lock().unwrap().push(query.clone());
         let guard = self.search_response.lock().unwrap();
         match &*guard {
             Some(response) => {
-                if is_first_call {
-                    Ok(response.clone())
-                } else {
-                    // Return empty results for subsequent calls (simulating pagination end)
-                    Ok(SearchResponse::new(Vec::new(), "Mock Source", &query.query))
-                }
+                let mut page = response.clone();
+                page.papers = response
+                    .papers
+                    .iter()
+                    .skip(query.offset)
+                    .take(query.max_results)
+                    .cloned()
+                    .collect();
+                Ok(page)
             }
             None => Ok(SearchResponse::new(Vec::new(), "Mock Source", &query.query)),
         }
@@ -82,4 +81,39 @@ pub fn make_paper(paper_id: &str, title: &str, source_type: SourceType) -> Paper
         format!("http://example.com/{}", paper_id),
         source_type,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn search_slices_and_records_offsets() {
+        let mock = MockSource::new();
+        mock.set_search_response(SearchResponse::new(
+            vec![
+                make_paper("1", "One", SourceType::Arxiv),
+                make_paper("2", "Two", SourceType::Arxiv),
+            ],
+            "Mock Source",
+            "test",
+        ));
+        let query = SearchQuery::new("test").offset(1).max_results(1);
+        assert_eq!(mock.search(&query).await.unwrap().papers[0].paper_id, "2");
+        assert!(mock
+            .search(&query.offset(2))
+            .await
+            .unwrap()
+            .papers
+            .is_empty());
+        assert_eq!(
+            mock.search_calls()
+                .iter()
+                .map(|q| q.offset)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        mock.clear_response();
+        assert!(mock.search_calls().is_empty());
+    }
 }

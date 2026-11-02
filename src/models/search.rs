@@ -126,6 +126,10 @@ pub struct SearchQuery {
     /// Maximum number of results to return
     pub max_results: usize,
 
+    /// Number of results to skip
+    #[serde(default)]
+    pub offset: usize,
+
     /// Year filter (single year, range like "2018-2022", or "2010-" for from, "-2015" for until)
     pub year: Option<String>,
 
@@ -170,6 +174,7 @@ impl Default for SearchQuery {
         Self {
             query: String::new(),
             max_results: 10,
+            offset: 0,
             year: None,
             sort_by: None,
             sort_order: None,
@@ -197,6 +202,12 @@ impl SearchQuery {
     /// Set maximum results
     pub fn max_results(mut self, max: usize) -> Self {
         self.max_results = max;
+        self
+    }
+
+    /// Set the result offset
+    pub fn offset(mut self, offset: usize) -> Self {
+        self.offset = offset;
         self
     }
 
@@ -782,6 +793,16 @@ mod tests {
             .categories("Ecology")
             .build();
         assert!(!query.type_filter_allows(&other));
+    }
+
+    #[test]
+    fn search_query_offset_defaults_for_older_serialized_queries() {
+        let query = SearchQuery::new("test").offset(12);
+        let mut value = serde_json::to_value(&query).unwrap();
+        assert_eq!(value["offset"], 12);
+        value.as_object_mut().unwrap().remove("offset");
+        let restored: SearchQuery = serde_json::from_value(value).unwrap();
+        assert_eq!(restored.offset, 0);
     }
 
     #[test]

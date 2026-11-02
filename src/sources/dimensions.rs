@@ -25,11 +25,12 @@ pub struct DimensionsSource {
 
 impl DimensionsSource {
     pub fn new() -> Result<Self, SourceError> {
-        let api_key = std::env::var("DIMENSIONS_API_KEY").ok();
+        let api_key = crate::config::resolve_api_key("DIMENSIONS_API_KEY");
         // Use 90s timeout for GraphQL queries that may take longer
         // User agent respects RESEARCH_MASTER_USER_AGENT env var
         Ok(Self {
-            client: Arc::new(HttpClient::with_timeout(
+            client: Arc::new(HttpClient::for_source_with_timeout(
+                "dimensions",
                 &crate::utils::get_user_agent(),
                 90,
             )?),

@@ -142,8 +142,20 @@ impl ToolHandler for LibraryAddHandler {
         let collection = collection_of(&args);
         let tags = tags_of(&args);
 
-        let library = PaperLibrary::new();
-        let outcome = library.add_paper(paper.clone(), collection.clone(), tags.clone())?;
+        let library = tokio::task::spawn_blocking(PaperLibrary::new)
+            .await
+            .map_err(|e| e.to_string())?;
+        let (store, saved_paper, saved_collection, saved_tags) = (
+            library.clone(),
+            paper.clone(),
+            collection.clone(),
+            tags.clone(),
+        );
+        let outcome = tokio::task::spawn_blocking(move || {
+            store.add_paper(saved_paper, saved_collection, saved_tags)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         let status = match outcome {
             AddedOrUpdated::Added => "added",
             AddedOrUpdated::Updated => "updated",
@@ -183,13 +195,23 @@ impl ToolHandler for LibraryAddHandler {
             } else {
                 RetractionWrite::Overwrite(found_status.to_string(), date)
             };
-            match library.set_retraction_scoped(
-                id,
-                collection.as_deref(),
-                Some(doi),
-                write,
-                at.clone(),
-            ) {
+            let id = id.to_string();
+            let doi = doi.to_string();
+            let saved_collection = collection.clone();
+            let saved_at = at.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                library.set_retraction_scoped(
+                    &id,
+                    saved_collection.as_deref(),
+                    Some(&doi),
+                    write,
+                    saved_at,
+                )
+            })
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|result| result);
+            match result {
                 Ok(RetractionWriteOutcome::Applied { status, date }) => {
                     retraction_status = Some(status);
                     retraction_date = date;
@@ -229,8 +251,12 @@ impl ToolHandler for LibraryListHandler {
         let collection = collection_of(&args);
         let limit = limit_of(&args, 100);
 
-        let library = PaperLibrary::new();
-        let entries = library.list(collection.as_deref());
+        let library = tokio::task::spawn_blocking(PaperLibrary::new)
+            .await
+            .map_err(|e| e.to_string())?;
+        let entries = tokio::task::spawn_blocking(move || library.list(collection.as_deref()))
+            .await
+            .map_err(|e| e.to_string())?;
         let total = entries.len();
         let papers: Result<Vec<Value>, String> = entries
             .into_iter()
@@ -261,8 +287,16 @@ impl ToolHandler for LibraryRemoveHandler {
         };
         let collection = collection_of(&args);
 
-        let library = PaperLibrary::new();
-        let removed = library.remove_paper(&id, collection.as_deref());
+        let library = tokio::task::spawn_blocking(PaperLibrary::new)
+            .await
+            .map_err(|e| e.to_string())?;
+        let saved_id = id.clone();
+        let saved_collection = collection.clone();
+        let removed = tokio::task::spawn_blocking(move || {
+            library.remove_paper(&saved_id, saved_collection.as_deref())
+        })
+        .await
+        .map_err(|e| e.to_string())?;
         Ok(json!({
             "removed": removed,
             "id": id,
@@ -286,9 +320,16 @@ impl ToolHandler for LibrarySearchHandler {
             .unwrap_or(false);
         let limit = limit_of(&args, 10);
 
-        let library = PaperLibrary::new();
-        let results: Result<Vec<Value>, String> = library
-            .search(&query, collection.as_deref(), retracted_only, limit)
+        let library = tokio::task::spawn_blocking(PaperLibrary::new)
+            .await
+            .map_err(|e| e.to_string())?;
+        let saved_query = query.clone();
+        let entries = tokio::task::spawn_blocking(move || {
+            library.search(&saved_query, collection.as_deref(), retracted_only, limit)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let results: Result<Vec<Value>, String> = entries
             .into_iter()
             .map(|(entry, score)| {
                 serde_json::to_value(&entry.paper)
@@ -334,8 +375,14 @@ impl ToolHandler for LibraryAskHandler {
             .map(|v| v as usize)
             .unwrap_or(5);
 
-        let library = PaperLibrary::new();
-        let answer = library.ask(&question, collection.as_deref(), top_k);
+        let library = tokio::task::spawn_blocking(PaperLibrary::new)
+            .await
+            .map_err(|e| e.to_string())?;
+        let answer = tokio::task::spawn_blocking(move || {
+            library.ask(&question, collection.as_deref(), top_k)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
         let matched: Result<Vec<Value>, String> = answer
             .matched
             .iter()
@@ -366,13 +413,23 @@ mod tests {
     use super::*;
     use crate::utils::LibraryEntry;
 
-    /// Serializes env access: the library path override is process-wide.
-    /// A tokio Mutex because the guard must span await points in async tests.
-    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    use crate::test_support::{EnvSnapshot, ENV_LOCK};
 
     /// Point PaperLibrary::new() at a fresh temp dir for one test.
-    async fn scoped_library_path(name: &str) -> tokio::sync::MutexGuard<'static, ()> {
+    async fn scoped_library_path(
+        name: &str,
+    ) -> (tokio::sync::MutexGuard<'static, ()>, EnvSnapshot) {
         let guard = ENV_LOCK.lock().await;
+        let env = EnvSnapshot::new(&[
+            "RESEARCH_MASTER_LIBRARY_PATH",
+            "RESEARCH_MASTER_OPENALEX_WORKS_URL",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ]);
         let dir = std::env::temp_dir().join(format!(
             "research-master-handler-test-{}-{name}",
             std::process::id()
@@ -380,7 +437,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("RESEARCH_MASTER_LIBRARY_PATH", &dir);
-        guard
+        (guard, env)
     }
 
     fn sample_paper() -> Value {
@@ -447,7 +504,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_list_remove_roundtrip_via_handlers() {
-        let _guard = scoped_library_path("roundtrip").await;
+        let (_guard, _env) = scoped_library_path("roundtrip").await;
         let mut server = mockito::Server::new_async().await;
         let retraction_mock = server
             .mock("GET", "/works/doi:10.1000%2Fsparse")
@@ -508,7 +565,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_minimal_fields_constructs_paper() {
-        let _guard = scoped_library_path("minimal").await;
+        let (_guard, _env) = scoped_library_path("minimal").await;
         // A DOI OpenAlex does not index leaves the entry "unknown" without
         // failing the add (404 is a permanent error, so no retries).
         let mut server = mockito::Server::new_async().await;
@@ -547,7 +604,7 @@ mod tests {
 
     #[tokio::test]
     async fn re_add_reports_updated() {
-        let _guard = scoped_library_path("re-add").await;
+        let (_guard, _env) = scoped_library_path("re-add").await;
 
         let args = json!({
             "paper_id": "1234.5678",
@@ -574,7 +631,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_handler_returns_scored_results() {
-        let _guard = scoped_library_path("search").await;
+        let (_guard, _env) = scoped_library_path("search").await;
 
         LibraryAddHandler
             .execute(json!({
@@ -604,7 +661,7 @@ mod tests {
 
     #[tokio::test]
     async fn ask_handler_reports_matched_terms() {
-        let _guard = scoped_library_path("ask").await;
+        let (_guard, _env) = scoped_library_path("ask").await;
 
         LibraryAddHandler
             .execute(json!({

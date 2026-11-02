@@ -25,7 +25,10 @@ pub struct DblpSource {
 impl DblpSource {
     pub fn new() -> Result<Self, SourceError> {
         Ok(Self {
-            client: Arc::new(HttpClient::new()?),
+            client: Arc::new(HttpClient::for_source(
+                "dblp",
+                &crate::utils::get_user_agent(),
+            )?),
         })
     }
 

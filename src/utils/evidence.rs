@@ -242,18 +242,21 @@ impl OpenAlexWork {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
+    use crate::test_support::{EnvSnapshot, ENV_LOCK};
     use std::time::Duration;
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     /// Build a client with proxy env vars cleared so requests reach the
     /// local mockito server instead of any ambient proxy.
-    fn test_client() -> HttpClient {
-        let guard = env_lock().lock().expect("env lock poisoned");
+    async fn test_client() -> HttpClient {
+        let guard = ENV_LOCK.lock().await;
+        let _env = EnvSnapshot::new(&[
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ]);
         const VARS: [&str; 6] = [
             "HTTP_PROXY",
             "HTTPS_PROXY",
@@ -275,6 +278,7 @@ mod tests {
                 None => std::env::remove_var(var),
             }
         }
+        drop(_env);
         drop(guard);
         client
     }
@@ -330,10 +334,14 @@ mod tests {
             .await;
 
         let url = format!("{}/tallies/", server.url());
-        let tallies =
-            fetch_scite_tallies(&url, &test_client(), "10.1038/nature12373", fast_retry())
-                .await
-                .expect("tallies");
+        let tallies = fetch_scite_tallies(
+            &url,
+            &test_client().await,
+            "10.1038/nature12373",
+            fast_retry(),
+        )
+        .await
+        .expect("tallies");
 
         assert_eq!(tallies.doi, "10.1038/nature12373");
         assert_eq!(tallies.total, 1937);
@@ -358,7 +366,7 @@ mod tests {
             .await;
 
         let url = format!("{}/tallies/", server.url());
-        let err = fetch_scite_tallies(&url, &test_client(), "10.9999/bogus", fast_retry())
+        let err = fetch_scite_tallies(&url, &test_client().await, "10.9999/bogus", fast_retry())
             .await
             .expect_err("404 must not be retried");
 
@@ -387,10 +395,14 @@ mod tests {
             .await;
 
         let url = format!("{}/tallies/", server.url());
-        let tallies =
-            fetch_scite_tallies(&url, &test_client(), "10.1038/nature12373", fast_retry())
-                .await
-                .expect("tallies after one 500");
+        let tallies = fetch_scite_tallies(
+            &url,
+            &test_client().await,
+            "10.1038/nature12373",
+            fast_retry(),
+        )
+        .await
+        .expect("tallies after one 500");
         assert_eq!(tallies.total, 1937);
 
         flaky.assert_async().await;
@@ -410,8 +422,13 @@ mod tests {
             .await;
 
         let url = format!("{}/tallies/", server.url());
-        let result =
-            fetch_scite_tallies(&url, &test_client(), "10.1038/NATURE12373", fast_retry()).await;
+        let result = fetch_scite_tallies(
+            &url,
+            &test_client().await,
+            "10.1038/NATURE12373",
+            fast_retry(),
+        )
+        .await;
         assert!(result.is_ok(), "got {:?}", result);
         mock.assert_async().await;
     }
@@ -434,9 +451,14 @@ mod tests {
             .await;
 
         let url = format!("{}/works/doi:", server.url());
-        let info = fetch_retraction(&url, &test_client(), "10.1038/nature12373", fast_retry())
-            .await
-            .expect("retraction info");
+        let info = fetch_retraction(
+            &url,
+            &test_client().await,
+            "10.1038/nature12373",
+            fast_retry(),
+        )
+        .await
+        .expect("retraction info");
 
         assert_eq!(info.doi, "10.1038/nature12373");
         assert!(!info.is_retracted);
@@ -472,7 +494,7 @@ mod tests {
         let url = format!("{}/works/doi:", server.url());
         let info = fetch_retraction(
             &url,
-            &test_client(),
+            &test_client().await,
             "10.1016/s0140-6736(97)11096-0",
             fast_retry(),
         )
@@ -496,7 +518,7 @@ mod tests {
             .await;
 
         let url = format!("{}/works/doi:", server.url());
-        let err = fetch_retraction(&url, &test_client(), "10.9999/bogus", fast_retry())
+        let err = fetch_retraction(&url, &test_client().await, "10.9999/bogus", fast_retry())
             .await
             .expect_err("404 must surface as NotFound");
 
@@ -506,7 +528,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_doi_returns_invalid_request() {
-        let client = test_client();
+        let client = test_client().await;
         let err = scite_tallies_from("http://127.0.0.1:1/tallies/", &client, "   ")
             .await
             .expect_err("blank DOI must be rejected");

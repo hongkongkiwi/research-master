@@ -198,23 +198,29 @@ impl ToolHandler for ScreeningStartHandler {
             );
         }
 
-        let store = ScreeningStore::new();
-        let session_id = store.create_session(
-            &name,
-            &query,
-            &inclusion,
-            &exclusion,
-            candidates,
-            duplicates_removed,
-        )?;
-        let summary = store.summary(&session_id)?.ok_or_else(|| {
-            format!("session '{session_id}' disappeared immediately after creation")
-        })?;
-        let first_batch: Vec<Value> = store
-            .undecided(&session_id, 5)?
-            .iter()
-            .map(with_extracted_statistics)
-            .collect();
+        let saved_name = name.clone();
+        let (session_id, summary, first_batch) = tokio::task::spawn_blocking(move || {
+            let store = ScreeningStore::new();
+            let session_id = store.create_session(
+                &saved_name,
+                &query,
+                &inclusion,
+                &exclusion,
+                candidates,
+                duplicates_removed,
+            )?;
+            let summary = store.summary(&session_id)?.ok_or_else(|| {
+                format!("session '{session_id}' disappeared immediately after creation")
+            })?;
+            let first_batch: Vec<Value> = store
+                .undecided(&session_id, 5)?
+                .iter()
+                .map(with_extracted_statistics)
+                .collect();
+            Ok::<_, String>((session_id, summary, first_batch))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         Ok(json!({
             "session_id": session_id,
             "name": name,
@@ -236,16 +242,22 @@ impl ToolHandler for ScreeningNextHandler {
     async fn execute(&self, args: Value) -> Result<Value, String> {
         let session_id = require_str(&args, "session_id")?.to_string();
         let limit = limit_of(&args, 10, 50);
-        let store = ScreeningStore::new();
-        let batch: Vec<Value> = store
-            .undecided(&session_id, limit)?
-            .iter()
-            .map(with_extracted_statistics)
-            .collect();
-        let remaining = store
-            .summary(&session_id)?
-            .ok_or_else(|| format!("no screening session with id '{session_id}'"))?
-            .remaining;
+        let saved_id = session_id.clone();
+        let (batch, remaining) = tokio::task::spawn_blocking(move || {
+            let store = ScreeningStore::new();
+            let batch: Vec<Value> = store
+                .undecided(&saved_id, limit)?
+                .iter()
+                .map(with_extracted_statistics)
+                .collect();
+            let remaining = store
+                .summary(&saved_id)?
+                .ok_or_else(|| format!("no screening session with id '{saved_id}'"))?
+                .remaining;
+            Ok::<_, String>((batch, remaining))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         Ok(json!({
             "session_id": session_id,
             "batch": batch,
@@ -289,11 +301,17 @@ impl ToolHandler for ScreeningDecideHandler {
             parsed.push((paper_id.to_string(), decision.to_string(), reason));
         }
 
-        let store = ScreeningStore::new();
-        let outcome = store.record_decisions(&session_id, parsed)?;
-        let summary = store
-            .summary(&session_id)?
-            .ok_or_else(|| format!("no screening session with id '{session_id}'"))?;
+        let saved_id = session_id.clone();
+        let (outcome, summary) = tokio::task::spawn_blocking(move || {
+            let store = ScreeningStore::new();
+            let outcome = store.record_decisions(&saved_id, parsed)?;
+            let summary = store
+                .summary(&saved_id)?
+                .ok_or_else(|| format!("no screening session with id '{saved_id}'"))?;
+            Ok::<_, String>((outcome, summary))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         Ok(json!({
             "session_id": session_id,
             "recorded": outcome.recorded,
@@ -311,10 +329,14 @@ pub struct ScreeningSummaryHandler;
 impl ToolHandler for ScreeningSummaryHandler {
     async fn execute(&self, args: Value) -> Result<Value, String> {
         let session_id = require_str(&args, "session_id")?.to_string();
-        let store = ScreeningStore::new();
-        let summary = store
-            .summary(&session_id)?
-            .ok_or_else(|| format!("no screening session with id '{session_id}'"))?;
+        let saved_id = session_id.clone();
+        let summary = tokio::task::spawn_blocking(move || {
+            ScreeningStore::new()
+                .summary(&saved_id)?
+                .ok_or_else(|| format!("no screening session with id '{saved_id}'"))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         let summary_text = format!(
             "identified {} → screened {} → excluded {} → included {}, {} uncertain, {} remaining",
             summary.identified,
@@ -343,13 +365,9 @@ impl ToolHandler for ScreeningSummaryHandler {
 mod tests {
     use super::*;
 
-    /// Serializes env access: the screenings path override is process-wide.
-    /// A tokio Mutex because the guard must span await points in async tests.
-    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
     /// Point ScreeningStore::new() at a fresh temp dir for one test.
     async fn scoped_screening_path(name: &str) -> tokio::sync::MutexGuard<'static, ()> {
-        let guard = ENV_LOCK.lock().await;
+        let guard = crate::test_support::ENV_LOCK.lock().await;
         let dir = std::env::temp_dir().join(format!(
             "research-master-screening-handler-test-{}-{name}",
             std::process::id()

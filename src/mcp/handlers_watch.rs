@@ -1,6 +1,28 @@
 //! MCP tool handlers for persisted arXiv topic watches.
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, LazyLock, Mutex};
+
+static IN_FLIGHT: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+
+struct InFlight(String);
+
+impl InFlight {
+    fn acquire(query: &str) -> Option<Self> {
+        let key = query.to_lowercase();
+        if IN_FLIGHT.lock().unwrap().insert(key.clone()) {
+            Some(Self(key))
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        IN_FLIGHT.lock().unwrap().remove(&self.0);
+    }
+}
 
 use serde_json::{json, Value};
 
@@ -24,8 +46,13 @@ pub struct WatchTopicHandler;
 impl ToolHandler for WatchTopicHandler {
     async fn execute(&self, args: Value) -> Result<Value, String> {
         let query = require_str(&args, "query")?;
-        let store = WatchStore::new();
-        let added = store.add(query);
+        let store = tokio::task::spawn_blocking(WatchStore::new)
+            .await
+            .map_err(|e| e.to_string())?;
+        let saved_query = query.to_string();
+        let added = tokio::task::spawn_blocking(move || store.add(&saved_query))
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(json!({
             "status": if added { "added" } else { "exists" },
             "query": query,
@@ -40,8 +67,12 @@ pub struct ListWatchesHandler;
 #[async_trait::async_trait]
 impl ToolHandler for ListWatchesHandler {
     async fn execute(&self, _args: Value) -> Result<Value, String> {
-        let store = WatchStore::new();
-        let watches = store.list();
+        let store = tokio::task::spawn_blocking(WatchStore::new)
+            .await
+            .map_err(|e| e.to_string())?;
+        let watches = tokio::task::spawn_blocking(move || store.list())
+            .await
+            .map_err(|e| e.to_string())?;
         let listed: Vec<Value> = watches
             .iter()
             .map(|w| {
@@ -124,14 +155,20 @@ impl ToolHandler for CheckAlertsHandler {
                 Arc::new(HttpClient::new().map_err(|e| format!("cannot create HTTP client: {e}"))?)
             }
         };
-        let store = WatchStore::new();
+        let store = tokio::task::spawn_blocking(WatchStore::new)
+            .await
+            .map_err(|e| e.to_string())?;
 
-        let mut targets = match query.as_deref() {
-            Some(q) => vec![store
+        let target_store = store.clone();
+        let mut targets = tokio::task::spawn_blocking(move || match query.as_deref() {
+            Some(q) => target_store
                 .get(q)
-                .ok_or_else(|| format!("'{q}' is not watched"))?],
-            None => store.list(),
-        };
+                .map(|watch| vec![watch])
+                .ok_or_else(|| format!("'{q}' is not watched")),
+            None => Ok(target_store.list()),
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         if targets.is_empty() {
             return Ok(json!({
                 "checked": 0,
@@ -144,9 +181,30 @@ impl ToolHandler for CheckAlertsHandler {
         let mut retraction_skipped = 0usize;
         let mut reports = Vec::with_capacity(targets.len());
         for watch in &mut targets {
+            let Some(guard) = InFlight::acquire(&watch.query) else {
+                reports.push(json!({ "query": watch.query, "skipped_in_flight": true }));
+                continue;
+            };
+            let current_store = store.clone();
+            let current_query = watch.query.clone();
+            let current = tokio::task::spawn_blocking(move || current_store.get(&current_query))
+                .await
+                .map_err(|e| e.to_string())?;
+            let Some(current) = current else {
+                reports.push(json!({ "query": watch.query, "error": "watch no longer exists" }));
+                continue;
+            };
+            *watch = current;
             match check_watch(&client, watch, max_results).await {
                 Ok(papers) => {
-                    store.update(watch);
+                    let update_store = store.clone();
+                    let updated_watch = watch.clone();
+                    let _guard = tokio::task::spawn_blocking(move || {
+                        update_store.update(&updated_watch);
+                        guard
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?;
                     let mut papers: Vec<Value> = papers
                         .iter()
                         .map(|p| {
@@ -201,8 +259,13 @@ pub struct UnwatchTopicHandler;
 impl ToolHandler for UnwatchTopicHandler {
     async fn execute(&self, args: Value) -> Result<Value, String> {
         let query = require_str(&args, "query")?;
-        let store = WatchStore::new();
-        let removed = store.remove(query);
+        let store = tokio::task::spawn_blocking(WatchStore::new)
+            .await
+            .map_err(|e| e.to_string())?;
+        let saved_query = query.to_string();
+        let removed = tokio::task::spawn_blocking(move || store.remove(&saved_query))
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(json!({ "removed": removed, "query": query }))
     }
 }
@@ -211,13 +274,9 @@ impl ToolHandler for UnwatchTopicHandler {
 mod tests {
     use super::*;
 
-    /// Serializes env access: the watches path override is process-wide.
-    /// A tokio Mutex because the guard must span await points in async tests.
-    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
     /// Point WatchStore::new() at a fresh temp dir for one test.
     async fn scoped_watches_path(name: &str) -> tokio::sync::MutexGuard<'static, ()> {
-        let guard = ENV_LOCK.lock().await;
+        let guard = crate::test_support::ENV_LOCK.lock().await;
         let dir = std::env::temp_dir().join(format!(
             "research-master-watch-handler-test-{}-{name}",
             std::process::id()
@@ -261,6 +320,14 @@ mod tests {
             HttpClient::with_proxy("research-master-tests", None, None, 0)
                 .expect("test HTTP client"),
         )
+    }
+
+    #[test]
+    fn in_flight_guard_excludes_and_releases_query() {
+        let guard = InFlight::acquire("Guard Test").unwrap();
+        assert!(InFlight::acquire("guard test").is_none());
+        drop(guard);
+        assert!(InFlight::acquire("guard test").is_some());
     }
 
     #[tokio::test]

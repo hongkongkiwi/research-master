@@ -719,8 +719,9 @@ async fn test_paper_stream_with_mock_source() {
     ));
 
     let paper_stream = research_master::utils::paper_stream(mock, SearchQuery::new("streaming"), 2);
-    let papers: Vec<Paper> = Box::pin(paper_stream).collect().await;
+    let (papers, errors) = research_master::utils::collect_papers(Box::pin(paper_stream)).await;
 
+    assert!(errors.is_empty());
     assert_eq!(papers.len(), 2);
     assert_eq!(papers[0].paper_id, "stream-1");
     assert_eq!(papers[1].paper_id, "stream-2");
@@ -739,7 +740,10 @@ async fn test_filter_by_year_stream_transformation() {
 
     let filtered =
         research_master::utils::filter_by_year(stream::iter(papers), Some(2020), Some(2023));
-    let filtered = research_master::utils::collect_papers(filtered).await;
+    let ok_stream = filtered.map(Ok::<_, research_master::sources::SourceError>);
+    let (filtered, errors): (Vec<Paper>, Vec<research_master::sources::SourceError>) =
+        research_master::utils::collect_papers(ok_stream).await;
+    assert!(errors.is_empty());
     let ids: Vec<&str> = filtered
         .iter()
         .map(|paper| paper.paper_id.as_str())

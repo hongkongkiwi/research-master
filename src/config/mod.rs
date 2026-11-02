@@ -234,6 +234,32 @@ pub struct ApiKeys {
     /// CORE API key (optional)
     #[serde(default)]
     pub core: Option<String>,
+    #[serde(default)]
+    pub exa: Option<String>,
+    #[serde(default)]
+    pub tavily: Option<String>,
+    #[serde(default)]
+    pub brave: Option<String>,
+    #[serde(default)]
+    pub github: Option<String>,
+    #[serde(default)]
+    pub openalex: Option<String>,
+    #[serde(default)]
+    pub ieee_xplore: Option<String>,
+    #[serde(default)]
+    pub acm: Option<String>,
+    #[serde(default)]
+    pub springer: Option<String>,
+    #[serde(default)]
+    pub dimensions: Option<String>,
+    #[serde(default)]
+    pub jstor: Option<String>,
+    #[serde(default)]
+    pub mdpi: Option<String>,
+    #[serde(default)]
+    pub ads: Option<String>,
+    #[serde(default)]
+    pub base: Option<String>,
 }
 
 impl Default for ApiKeys {
@@ -247,6 +273,7 @@ impl ApiKeys {
         Self {
             semantic_scholar: std::env::var("SEMANTIC_SCHOLAR_API_KEY").ok(),
             core: std::env::var("CORE_API_KEY").ok(),
+            ..Self::without_env()
         }
     }
 
@@ -254,6 +281,19 @@ impl ApiKeys {
         Self {
             semantic_scholar: None,
             core: None,
+            exa: None,
+            tavily: None,
+            brave: None,
+            github: None,
+            openalex: None,
+            ieee_xplore: None,
+            acm: None,
+            springer: None,
+            dimensions: None,
+            jstor: None,
+            mdpi: None,
+            ads: None,
+            base: None,
         }
     }
 }
@@ -327,6 +367,9 @@ pub struct RateLimitConfig {
     #[serde(default = "default_rps")]
     pub default_requests_per_second: f32,
 
+    #[serde(skip)]
+    pub(crate) default_rate_configured: bool,
+
     /// Maximum concurrent requests
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent_requests: usize,
@@ -336,6 +379,7 @@ impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
             default_requests_per_second: default_rps(),
+            default_rate_configured: false,
             max_concurrent_requests: default_max_concurrent(),
         }
     }
@@ -364,7 +408,12 @@ pub fn load_config(path: &Path) -> Result<Config, config::ConfigError> {
         .add_source(config::Environment::with_prefix("RESEARCH_MASTER"))
         .build()?;
 
-    settings.try_deserialize().map(apply_env_overrides)
+    let default_rate_configured = settings
+        .get::<f32>("rate_limits.default_requests_per_second")
+        .is_ok();
+    let mut config: Config = settings.try_deserialize()?;
+    config.rate_limits.default_rate_configured = default_rate_configured;
+    Ok(apply_env_overrides(config))
 }
 
 /// Install file configuration before creating the source registry.
@@ -379,6 +428,15 @@ pub fn set_config(config: Config) -> Result<(), Box<Config>> {
 /// Only variables that are actually set take effect, so an unset variable does
 /// not wipe a value the file provided.
 fn apply_env_overrides(mut config: Config) -> Config {
+    if let Ok(value) = std::env::var("RESEARCH_MASTER_PROXY_HTTP") {
+        config.sources.proxy_http = Some(value);
+    }
+    if let Ok(value) = std::env::var("RESEARCH_MASTER_PROXY_HTTPS") {
+        config.sources.proxy_https = Some(value);
+    }
+    if let Ok(value) = std::env::var("RESEARCH_MASTER_RATE_LIMITS") {
+        config.sources.rate_limits = Some(value);
+    }
     if let Ok(value) = std::env::var("RESEARCH_MASTER_ENABLED_SOURCES") {
         config.sources.enabled_sources = Some(value);
     }
@@ -454,6 +512,36 @@ pub fn get_config() -> Config {
     }
 }
 
+/// Resolve a credential from the environment before the loaded configuration.
+pub fn resolve_api_key(env_name: &str) -> Option<String> {
+    resolve_api_key_with_config(env_name, &get_config())
+}
+
+fn resolve_api_key_with_config(env_name: &str, config: &Config) -> Option<String> {
+    std::env::var(env_name).ok().or_else(|| {
+        let keys = &config.api_keys;
+        match env_name {
+            "SEMANTIC_SCHOLAR_API_KEY" => &keys.semantic_scholar,
+            "CORE_API_KEY" => &keys.core,
+            "EXA_API_KEY" => &keys.exa,
+            "TAVILY_API_KEY" => &keys.tavily,
+            "BRAVE_API_KEY" => &keys.brave,
+            "GITHUB_API_KEY" => &keys.github,
+            "OPENALEX_API_KEY" => &keys.openalex,
+            "IEEE_XPLORE_API_KEY" => &keys.ieee_xplore,
+            "ACM_API_KEY" => &keys.acm,
+            "SPRINGER_API_KEY" => &keys.springer,
+            "DIMENSIONS_API_KEY" => &keys.dimensions,
+            "JSTOR_API_KEY" => &keys.jstor,
+            "MDPI_API_KEY" => &keys.mdpi,
+            "ADS_API_KEY" => &keys.ads,
+            "BASE_API_KEY" => &keys.base,
+            _ => return None,
+        }
+        .clone()
+    })
+}
+
 /// Search for configuration file in default locations
 ///
 /// Searches in the following order:
@@ -527,6 +615,29 @@ pub use file_config::ConfigFileError;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_resolve_api_key_env_precedes_file() {
+        let _guard = crate::test_support::ENV_LOCK.blocking_lock();
+        let _env = crate::test_support::EnvSnapshot::new(&["BASE_API_KEY"]);
+        let previous = std::env::var_os("BASE_API_KEY");
+        let mut config = Config::without_env();
+        config.api_keys.base = Some("file-key".into());
+        std::env::remove_var("BASE_API_KEY");
+        assert_eq!(
+            resolve_api_key_with_config("BASE_API_KEY", &config).as_deref(),
+            Some("file-key")
+        );
+        std::env::set_var("BASE_API_KEY", "env-key");
+        assert_eq!(
+            resolve_api_key_with_config("BASE_API_KEY", &config).as_deref(),
+            Some("env-key")
+        );
+        match previous {
+            Some(value) => std::env::set_var("BASE_API_KEY", value),
+            None => std::env::remove_var("BASE_API_KEY"),
+        }
+    }
 
     #[test]
     fn test_default_config() {
@@ -668,6 +779,8 @@ mod tests {
 
     #[test]
     fn test_get_config_test_mode() {
+        let _guard = crate::test_support::ENV_LOCK.blocking_lock();
+        let _env = crate::test_support::EnvSnapshot::new(&[TEST_MODE_ENV_VAR]);
         // Set test mode env var
         std::env::set_var(TEST_MODE_ENV_VAR, "true");
 
@@ -681,6 +794,8 @@ mod tests {
 
     #[test]
     fn test_load_config_test_mode() {
+        let _guard = crate::test_support::ENV_LOCK.blocking_lock();
+        let _env = crate::test_support::EnvSnapshot::new(&[TEST_MODE_ENV_VAR]);
         // Set test mode env var
         std::env::set_var(TEST_MODE_ENV_VAR, "true");
 

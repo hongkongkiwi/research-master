@@ -26,7 +26,10 @@ impl EuropePmcSource {
     /// Create a new EuropePMC source
     pub fn new() -> Result<Self, SourceError> {
         Ok(Self {
-            client: Arc::new(HttpClient::new()?),
+            client: Arc::new(HttpClient::for_source(
+                "europe_pmc",
+                &crate::utils::get_user_agent(),
+            )?),
         })
     }
 

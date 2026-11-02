@@ -27,7 +27,10 @@ pub struct DoajSource {
 impl DoajSource {
     pub fn new() -> Result<Self, SourceError> {
         Ok(Self {
-            client: Arc::new(HttpClient::new()?),
+            client: Arc::new(HttpClient::for_source(
+                "doaj",
+                &crate::utils::get_user_agent(),
+            )?),
         })
     }
 }

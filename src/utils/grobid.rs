@@ -528,8 +528,8 @@ fn attr_value(e: &BytesStart<'_>, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{EnvSnapshot, ENV_LOCK};
     use std::net::TcpListener;
-    use std::sync::{Mutex, OnceLock};
 
     use mockito::Matcher;
 
@@ -602,15 +602,18 @@ mod tests {
   </teiHeader>
 </TEI>"#;
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
     /// Build a client with proxy env vars cleared so requests reach the
     /// local mockito server instead of any ambient proxy.
-    fn test_client() -> HttpClient {
-        let guard = env_lock().lock().expect("env lock poisoned");
+    async fn test_client() -> HttpClient {
+        let guard = ENV_LOCK.lock().await;
+        let _env = EnvSnapshot::new(&[
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ]);
         const VARS: [&str; 6] = [
             "HTTP_PROXY",
             "HTTPS_PROXY",
@@ -632,13 +635,10 @@ mod tests {
                 None => std::env::remove_var(var),
             }
         }
+        drop(_env);
         drop(guard);
         client
     }
-
-    /// Serializes GROBID_URL access: the override is process-wide.
-    /// A tokio Mutex because guards span await points in async tests.
-    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     type EnvLockGuard = tokio::sync::MutexGuard<'static, ()>;
 
@@ -660,7 +660,6 @@ mod tests {
     /// whole test body; hold both guards until the test ends.
     async fn scoped_grobid_env(url: &str) -> (EnvLockGuard, EnvGuard) {
         let lock = ENV_LOCK.lock().await;
-        let proxy_guard = env_lock().lock().expect("env lock poisoned");
         const VARS: [&str; 7] = [
             "GROBID_URL",
             "HTTP_PROXY",
@@ -678,7 +677,6 @@ mod tests {
             std::env::remove_var(name);
         }
         std::env::set_var("GROBID_URL", url);
-        drop(proxy_guard);
         (lock, EnvGuard(previous))
     }
 
@@ -775,7 +773,7 @@ mod tests {
         let path = temp_pdf("multipart-shape", b"%PDF-1.4 grobid multipart test");
         let tei = post_pdf_tei(
             &server.url(),
-            &test_client(),
+            &test_client().await,
             &path,
             MAX_PDF_BYTES,
             REFERENCES_ENDPOINT,
@@ -793,7 +791,7 @@ mod tests {
         let path = temp_pdf("too-big", &[0u8; 64]);
         let err = post_pdf_tei(
             "http://127.0.0.1:9",
-            &test_client(),
+            &test_client().await,
             &path,
             16,
             REFERENCES_ENDPOINT,
@@ -813,7 +811,7 @@ mod tests {
         let path = temp_pdf("refused", b"%PDF-1.4");
         let err = post_pdf_tei(
             &format!("http://{addr}"),
-            &test_client(),
+            &test_client().await,
             &path,
             MAX_PDF_BYTES,
             HEADER_ENDPOINT,
@@ -843,11 +841,10 @@ mod tests {
             .create_async()
             .await;
 
+        let client = test_client().await;
         let (_lock, _env) = scoped_grobid_env(&server.url()).await;
         let path = temp_pdf("env-override", b"%PDF-1.4");
-        let papers = extract_references(&test_client(), &path)
-            .await
-            .expect("papers");
+        let papers = extract_references(&client, &path).await.expect("papers");
 
         assert_eq!(papers.len(), 2);
         let filename = file_label(&path);
@@ -861,6 +858,7 @@ mod tests {
     #[tokio::test]
     async fn grobid_base_reads_env_and_strips_trailing_slash() {
         let _lock = ENV_LOCK.lock().await;
+        let _env = EnvSnapshot::new(&["GROBID_URL"]);
         let previous = std::env::var("GROBID_URL").ok();
 
         std::env::set_var("GROBID_URL", "http://127.0.0.1:9090/");

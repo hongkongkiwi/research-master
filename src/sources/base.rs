@@ -27,9 +27,12 @@ pub struct BaseSource {
 
 impl BaseSource {
     pub fn new() -> Result<Self, SourceError> {
-        let api_key = std::env::var("BASE_API_KEY").ok();
+        let api_key = crate::config::resolve_api_key("BASE_API_KEY");
         Ok(Self {
-            client: Arc::new(HttpClient::new()?),
+            client: Arc::new(HttpClient::for_source(
+                "base",
+                &crate::utils::get_user_agent(),
+            )?),
             api_key,
         })
     }

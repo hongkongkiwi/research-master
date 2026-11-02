@@ -96,7 +96,17 @@ impl ToolHandler for ZoteroSearchHandler {
             .unwrap_or(10)
             .min(50);
 
-        let client = ZoteroClient::new()?;
+        self.search(query, limit, ZoteroClient::shared()).await
+    }
+}
+
+impl ZoteroSearchHandler {
+    async fn search(
+        &self,
+        query: &str,
+        limit: usize,
+        client: &ZoteroClient,
+    ) -> Result<Value, String> {
         let items = client.search_items(query, limit).await?;
         let library = client.library_kind()?;
         let items: Result<Vec<Value>, String> = items
@@ -120,9 +130,7 @@ mod tests {
     use super::*;
     use crate::sources::{Source, SourceCapabilities, SourceError};
 
-    /// Serializes Zotero env access; a tokio Mutex because the guard must
-    /// span await points in async tests.
-    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    use crate::test_support::{EnvSnapshot, ENV_LOCK};
 
     const ZOTERO_ENV_VARS: [&str; 4] = [
         "ZOTERO_API_KEY",
@@ -220,6 +228,18 @@ mod tests {
     #[tokio::test]
     async fn save_handler_resolves_paper_and_reports_key() {
         let _guard = ENV_LOCK.lock().await;
+        let _env = EnvSnapshot::new(&[
+            "ZOTERO_API_KEY",
+            "ZOTERO_USER_ID",
+            "ZOTERO_GROUP_ID",
+            "RESEARCH_MASTER_ZOTERO_API_URL",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ]);
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("POST", "/users/12345/items")
@@ -252,6 +272,18 @@ mod tests {
     #[tokio::test]
     async fn save_handler_resolution_failure_is_honest() {
         let _guard = ENV_LOCK.lock().await;
+        let _env = EnvSnapshot::new(&[
+            "ZOTERO_API_KEY",
+            "ZOTERO_USER_ID",
+            "ZOTERO_GROUP_ID",
+            "RESEARCH_MASTER_ZOTERO_API_URL",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ]);
         // No sources at all: auto-detection fails before any Zotero call,
         // so no env setup is needed beyond the lock.
         let handler = ZoteroSaveHandler {
@@ -268,6 +300,18 @@ mod tests {
     #[tokio::test]
     async fn search_handler_returns_items_and_library_kind() {
         let _guard = ENV_LOCK.lock().await;
+        let _env = EnvSnapshot::new(&[
+            "ZOTERO_API_KEY",
+            "ZOTERO_USER_ID",
+            "ZOTERO_GROUP_ID",
+            "RESEARCH_MASTER_ZOTERO_API_URL",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ]);
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("GET", "/users/12345/items?q=attention&limit=10&format=json")
@@ -287,8 +331,9 @@ mod tests {
         let saved_proxies = clear_proxy_env();
         zotero_env(server.url());
 
+        let client = ZoteroClient::new().unwrap();
         let result = ZoteroSearchHandler
-            .execute(json!({ "query": "attention" }))
+            .search("attention", 10, &client)
             .await
             .expect("search");
 

@@ -25,8 +25,11 @@ pub struct AdsSource {
 impl AdsSource {
     pub fn new() -> Result<Self, SourceError> {
         Ok(Self {
-            client: Arc::new(HttpClient::new()?),
-            api_key: std::env::var("ADS_API_KEY").ok().filter(|k| !k.is_empty()),
+            client: Arc::new(HttpClient::for_source(
+                "ads",
+                &crate::utils::get_user_agent(),
+            )?),
+            api_key: crate::config::resolve_api_key("ADS_API_KEY").filter(|k| !k.is_empty()),
         })
     }
 }

@@ -25,7 +25,10 @@ pub struct IacrSource {
 impl IacrSource {
     pub fn new() -> Result<Self, SourceError> {
         Ok(Self {
-            client: Arc::new(HttpClient::new()?),
+            client: Arc::new(HttpClient::for_source(
+                "iacr",
+                &crate::utils::get_user_agent(),
+            )?),
         })
     }
 }

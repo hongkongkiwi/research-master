@@ -32,7 +32,10 @@ pub struct WorldWideScienceSource {
 impl WorldWideScienceSource {
     pub fn new() -> Result<Self, SourceError> {
         Ok(Self {
-            client: Arc::new(HttpClient::new()?),
+            client: Arc::new(HttpClient::for_source(
+                "worldwidescience",
+                &crate::utils::get_user_agent(),
+            )?),
         })
     }
 }

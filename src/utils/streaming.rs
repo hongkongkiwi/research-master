@@ -4,9 +4,10 @@
 //! search results incrementally without loading everything into memory.
 
 use crate::models::{Paper, SearchQuery};
-use crate::sources::Source;
+use crate::sources::{Source, SourceError};
 use async_stream::stream;
 use futures_util::stream::{Stream, StreamExt};
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
@@ -17,41 +18,48 @@ use tracing::warn;
 ///
 /// This allows processing large result sets without loading everything
 /// into memory at once. The stream automatically handles pagination
-/// and rate limiting.
+/// and rate limiting. A search error is yielded once and ends the stream.
+/// The supplied query's offset is replaced by page offsets starting at zero.
+///
+/// ```no_run
+/// # use research_master::utils::{paper_stream, collect_papers};
+/// # use research_master::models::SearchQuery;
+/// # use research_master::sources::Source;
+/// # async fn example<T: Source + Clone + 'static>(source: T) {
+/// let stream = Box::pin(paper_stream(source, SearchQuery::new("genomics"), 20));
+/// let (papers, errors) = collect_papers(stream).await;
+/// # }
+/// ```
 pub fn paper_stream<T: Source + Clone + 'static>(
     source: T,
     query: SearchQuery,
     page_size: usize,
-) -> impl Stream<Item = Paper> + Send {
+) -> impl Stream<Item = Result<Paper, SourceError>> + Send {
     stream! {
-        let rate_limit_delay = Duration::from_millis(200);
+        let mut seen = HashSet::new();
+        let mut pages_yielded = 0;
         loop {
-            // Clone query for this page
             let mut page_query = query.clone();
             page_query.max_results = page_size;
+            page_query.offset = pages_yielded * page_size;
 
             match source.search(&page_query).await {
                 Ok(response) => {
-                    let papers = response.papers;
-                    let count = papers.len();
-
-                    if count == 0 {
-                        // No more papers
+                    let mut new_ids = false;
+                    for paper in response.papers {
+                        if seen.insert(paper.paper_id.clone()) {
+                            new_ids = true;
+                            yield Ok(paper);
+                        }
+                    }
+                    if !new_ids {
                         break;
                     }
-
-                    // Yield each paper
-                    for paper in papers {
-                        yield paper;
-                    }
-
-                    // Apply rate limiting
-                    if rate_limit_delay > Duration::ZERO {
-                        sleep(rate_limit_delay).await;
-                    }
+                    pages_yielded += 1;
+                    sleep(Duration::from_millis(200)).await;
                 }
                 Err(e) => {
-                    warn!("Error fetching papers: {}", e);
+                    yield Err(e);
                     break;
                 }
             }
@@ -60,6 +68,8 @@ pub fn paper_stream<T: Source + Clone + 'static>(
 }
 
 /// Create a stream that filters papers by year range.
+///
+/// This operates on papers, not `paper_stream` results. Collect first and inspect errors.
 pub fn filter_by_year<S: Stream<Item = Paper> + Send + 'static>(
     stream: S,
     min_year: Option<i32>,
@@ -68,13 +78,19 @@ pub fn filter_by_year<S: Stream<Item = Paper> + Send + 'static>(
     FilterByYearStream::new(stream, min_year, max_year)
 }
 
-/// Collect all papers from a stream into a Vec.
-pub async fn collect_papers<S: Stream<Item = Paper> + Send + Unpin>(mut stream: S) -> Vec<Paper> {
+/// Collect papers and errors separately from a result stream.
+pub async fn collect_papers<S: Stream<Item = Result<Paper, SourceError>> + Send + Unpin>(
+    mut stream: S,
+) -> (Vec<Paper>, Vec<SourceError>) {
     let mut papers = Vec::new();
-    while let Some(paper) = stream.next().await {
-        papers.push(paper);
+    let mut errors = Vec::new();
+    while let Some(result) = stream.next().await {
+        match result {
+            Ok(paper) => papers.push(paper),
+            Err(error) => errors.push(error),
+        }
     }
-    papers
+    (papers, errors)
 }
 
 /// A channel-based concurrent stream for parallel source searches.
@@ -149,7 +165,7 @@ impl ConcurrentPaperStream {
     }
 }
 
-/// Stream that limits the number of items
+/// Stream that limits the number of papers. Collect `paper_stream` and inspect errors first.
 #[derive(Debug)]
 pub struct TakeStream<S: Stream<Item = Paper>> {
     stream: S,
@@ -185,7 +201,7 @@ impl<S: Stream<Item = Paper> + Unpin> Stream for TakeStream<S> {
     }
 }
 
-/// Stream that skips items
+/// Stream that skips papers. Collect `paper_stream` and inspect errors first.
 #[derive(Debug)]
 pub struct SkipStream<S: Stream<Item = Paper>> {
     stream: S,
@@ -219,7 +235,7 @@ impl<S: Stream<Item = Paper> + Unpin> Stream for SkipStream<S> {
     }
 }
 
-/// Stream filter for year range
+/// Stream filter for papers by year. Collect `paper_stream` and inspect errors first.
 #[derive(Debug)]
 pub struct FilterByYearStream<S: Stream<Item = Paper>> {
     stream: S,
@@ -308,14 +324,17 @@ mod tests {
             "test",
         ));
 
-        let stream = paper_stream(mock, SearchQuery::new("test"), 10);
-        let mut stream = Box::pin(stream);
-        let mut papers = Vec::new();
+        let stream = paper_stream(mock.clone(), SearchQuery::new("test"), 2);
+        let (papers, errors) = collect_papers(Box::pin(stream)).await;
 
-        while let Some(paper) = stream.next().await {
-            papers.push(paper);
-        }
-
+        assert!(errors.is_empty());
+        assert_eq!(
+            mock.search_calls()
+                .iter()
+                .map(|q| q.offset)
+                .collect::<Vec<_>>(),
+            vec![0, 2, 4]
+        );
         assert_eq!(papers.len(), 3);
         assert_eq!(papers[0].paper_id, "1");
         assert_eq!(papers[1].paper_id, "2");
@@ -336,6 +355,60 @@ mod tests {
         }
 
         assert!(papers.is_empty());
+    }
+
+    #[derive(Debug, Clone)]
+    struct RepeatingSource;
+
+    #[async_trait::async_trait]
+    impl Source for RepeatingSource {
+        fn id(&self) -> &str {
+            "repeating"
+        }
+        fn name(&self) -> &str {
+            "Repeating"
+        }
+        async fn search(&self, _: &SearchQuery) -> Result<SearchResponse, SourceError> {
+            Ok(SearchResponse::new(
+                vec![make_paper("1", "Paper", SourceType::Arxiv)],
+                "Repeating",
+                "test",
+            ))
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct FailingSource;
+
+    #[async_trait::async_trait]
+    impl Source for FailingSource {
+        fn id(&self) -> &str {
+            "failing"
+        }
+        fn name(&self) -> &str {
+            "Failing"
+        }
+        async fn search(&self, _: &SearchQuery) -> Result<SearchResponse, SourceError> {
+            Err(SourceError::RateLimit)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_paper_stream_error_is_terminal() {
+        let mut stream = Box::pin(paper_stream(FailingSource, SearchQuery::new("test"), 2));
+        assert!(matches!(
+            stream.next().await,
+            Some(Err(SourceError::RateLimit))
+        ));
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_paper_stream_repeated_page_terminates() {
+        let stream = paper_stream(RepeatingSource, SearchQuery::new("test"), 2);
+        let (papers, errors) = collect_papers(Box::pin(stream)).await;
+        assert_eq!(papers.len(), 1);
+        assert!(errors.is_empty());
     }
 
     #[test]

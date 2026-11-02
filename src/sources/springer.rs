@@ -27,9 +27,12 @@ pub struct SpringerSource {
 
 impl SpringerSource {
     pub fn new() -> Result<Self, SourceError> {
-        let api_key = std::env::var("SPRINGER_API_KEY").ok();
+        let api_key = crate::config::resolve_api_key("SPRINGER_API_KEY");
         Ok(Self {
-            client: Arc::new(HttpClient::new()?),
+            client: Arc::new(HttpClient::for_source(
+                "springer",
+                &crate::utils::get_user_agent(),
+            )?),
             api_key,
         })
     }

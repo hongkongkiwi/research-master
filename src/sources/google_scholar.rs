@@ -43,7 +43,10 @@ impl GoogleScholarSource {
         }
 
         Ok(Self {
-            client: Arc::new(HttpClient::new()?),
+            client: Arc::new(HttpClient::for_source(
+                "google_scholar",
+                &crate::utils::get_user_agent(),
+            )?),
             enabled,
         })
     }

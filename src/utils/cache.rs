@@ -126,9 +126,19 @@ impl CacheService {
     }
 
     /// Generate a cache key for a search query, including source-specific options.
+    /// The `filters` map is canonicalized (sorted by key) so equal queries built
+    /// with different HashMap iteration orders hash identically.
     fn search_cache_key(&self, query: &SearchQuery, source: &str) -> String {
-        let input = serde_json::to_vec(&(source, serde_json::to_value(query).unwrap_or_default()))
-            .unwrap_or_default();
+        let mut value = serde_json::to_value(query).unwrap_or_default();
+        if let Some(filters) = value.get_mut("filters").and_then(|f| f.as_object_mut()) {
+            let mut sorted: Vec<(String, serde_json::Value)> = filters
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            sorted.sort_by(|a, b| a.0.cmp(&b.0));
+            *filters = sorted.into_iter().collect();
+        }
+        let input = serde_json::to_vec(&(source, value)).unwrap_or_default();
         format!("{:x}", md5::compute(input))
     }
 

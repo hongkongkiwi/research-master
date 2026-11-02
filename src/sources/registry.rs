@@ -444,12 +444,7 @@ impl Default for SourceRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
+    use crate::test_support::{EnvSnapshot, ENV_LOCK};
 
     #[test]
     fn test_registry_basic() {
@@ -482,7 +477,12 @@ mod tests {
     ) where
         F: FnOnce(),
     {
-        let _guard = env_lock().lock().expect("env lock poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
+        let _env = EnvSnapshot::new(&[
+            "RESEARCH_MASTER_ENABLED_SOURCES",
+            "RESEARCH_MASTER_DISABLED_SOURCES",
+            "RESEARCH_MASTER_DEFAULT_DISABLED_SOURCES",
+        ]);
         // Save original values
         let orig_enabled = std::env::var("RESEARCH_MASTER_ENABLED_SOURCES").ok();
         let orig_disabled = std::env::var("RESEARCH_MASTER_DISABLED_SOURCES").ok();

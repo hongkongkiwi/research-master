@@ -27,7 +27,10 @@ impl PubMedSource {
     /// Create a new PubMed source
     pub fn new() -> Result<Self, SourceError> {
         Ok(Self {
-            client: Arc::new(HttpClient::new()?),
+            client: Arc::new(HttpClient::for_source(
+                "pubmed",
+                &crate::utils::get_user_agent(),
+            )?),
         })
     }
 
@@ -126,6 +129,7 @@ impl PubMedSource {
             ("db".to_string(), "pubmed".to_string()),
             ("term".to_string(), term),
             ("retmax".to_string(), query.max_results.to_string()),
+            ("retstart".to_string(), query.offset.to_string()),
             ("retmode".to_string(), "xml".to_string()),
         ];
 

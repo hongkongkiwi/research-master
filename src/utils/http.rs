@@ -319,7 +319,91 @@ pub fn get_user_agent() -> String {
         .unwrap_or_else(|_| format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")))
 }
 
+fn source_proxy(source_id: &str, entries: Option<&str>) -> Option<String> {
+    entries?.split(',').find_map(|entry| {
+        let (id, url) = entry.trim().split_once(':')?;
+        (id.trim() == source_id && !url.trim().is_empty()).then(|| url.trim().to_string())
+    })
+}
+
+fn source_settings(source_id: &str, config: &crate::config::Config) -> (ProxyConfig, f32) {
+    let mut proxy = create_proxy_config();
+    proxy.http_proxy =
+        source_proxy(source_id, config.sources.proxy_http.as_deref()).or(proxy.http_proxy);
+    proxy.https_proxy =
+        source_proxy(source_id, config.sources.proxy_https.as_deref()).or(proxy.https_proxy);
+    let rate = config
+        .sources
+        .parse_rate_limits()
+        .get(source_id)
+        .copied()
+        .filter(|rate| rate.is_finite() && *rate >= 0.0)
+        .or_else(|| {
+            (source_id == "semantic")
+                .then(|| std::env::var("SEMANTIC_SCHOLAR_RATE_LIMIT").ok())
+                .flatten()
+                .and_then(|s| s.parse::<f32>().ok())
+                .filter(|rate| rate.is_finite() && *rate >= 0.0)
+        })
+        .or_else(|| {
+            std::env::var(RATE_LIMIT_ENV_VAR)
+                .ok()
+                .and_then(|s| s.parse::<f32>().ok())
+                .filter(|rate| rate.is_finite() && *rate >= 0.0)
+        })
+        .or_else(|| {
+            config
+                .rate_limits
+                .default_rate_configured
+                .then_some(config.rate_limits.default_requests_per_second)
+        })
+        .unwrap_or(match source_id {
+            "semantic" => 1.0,
+            "orcid" => 2.0,
+            _ => 5.0,
+        });
+    (proxy, rate)
+}
+
 impl HttpClient {
+    /// Create a client using per-source proxy and rate settings.
+    pub fn for_source(source_id: &str, user_agent: &str) -> Result<Self, SourceError> {
+        Self::for_source_with_timeout(source_id, user_agent, 30)
+    }
+
+    /// Create a source client with a custom timeout.
+    pub fn for_source_with_timeout(
+        source_id: &str,
+        user_agent: &str,
+        timeout_secs: u64,
+    ) -> Result<Self, SourceError> {
+        let (proxy, rate) = source_settings(source_id, &crate::config::get_config());
+        // Governor uses integer quotas; round the interval to nanoseconds to retain fractional rates.
+        let rate_limiter = if rate > 0.0 && rate.is_finite() {
+            let nanos = (1_000_000_000.0 / f64::from(rate))
+                .round()
+                .clamp(1.0, u64::MAX as f64) as u64;
+            Quota::with_period(Duration::from_nanos(nanos))
+                .map(|quota| Arc::new(RateLimiter::direct(quota)))
+        } else {
+            None
+        };
+        let builder = Client::builder()
+            .user_agent(user_agent)
+            .timeout(effective_timeout(Duration::from_secs(timeout_secs)))
+            .connect_timeout(Duration::from_secs(10))
+            .pool_idle_timeout(Duration::from_secs(90));
+        let client = proxy
+            .apply_to(builder)
+            .and_then(|b| b.build())
+            .map_err(|e| SourceError::Network(format!("Failed to create HTTP client: {}", e)))?;
+        Ok(Self {
+            client: Arc::new(client),
+            rate_limiter,
+            no_proxy: proxy.no_proxy,
+        })
+    }
+
     /// Create a new HTTP client with default settings and rate limiting
     pub fn new() -> Result<Self, SourceError> {
         Self::with_user_agent(&get_user_agent())
@@ -620,15 +704,11 @@ impl Default for HttpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
+    use crate::test_support::{EnvSnapshot, ENV_LOCK};
 
     fn with_rate_limit_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let _guard = env_lock().lock().expect("env lock poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
+        let _env = EnvSnapshot::new(&[RATE_LIMIT_ENV_VAR]);
         let previous = std::env::var(RATE_LIMIT_ENV_VAR).ok();
 
         match value {
@@ -649,13 +729,18 @@ mod tests {
     /// Clears all proxy environment variables, applies `values` while `f`
     /// runs, and restores everything afterwards.
     fn with_proxy_env<T>(values: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
-        let _guard = env_lock().lock().expect("env lock poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
+        with_proxy_env_locked(values, f)
+    }
+
+    fn with_proxy_env_locked<T>(values: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
         const VARS: [&str; 4] = [
             PROXY_ENV_VAR,
             HTTP_PROXY_ENV_VAR,
             HTTPS_PROXY_ENV_VAR,
             NO_PROXY_ENV_VAR,
         ];
+        let _env = EnvSnapshot::new(&VARS);
         let previous: Vec<(&str, Option<String>)> =
             VARS.iter().map(|v| (*v, std::env::var(v).ok())).collect();
         for var in VARS {
@@ -678,6 +763,61 @@ mod tests {
         }
 
         result
+    }
+
+    #[test]
+    fn test_semantic_source_default_rate() {
+        let _guard = ENV_LOCK.blocking_lock();
+        let vars = [
+            "SEMANTIC_SCHOLAR_RATE_LIMIT",
+            RATE_LIMIT_ENV_VAR,
+            "RESEARCH_MASTER_RATE_LIMITS",
+        ];
+        let _env = EnvSnapshot::new(&vars);
+        let previous: Vec<_> = vars.iter().map(std::env::var_os).collect();
+        for name in vars {
+            std::env::remove_var(name);
+        }
+        let config = crate::config::Config::default();
+        assert_eq!(source_settings("semantic", &config).1, 1.0);
+        let client = HttpClient::for_source("semantic", "test").unwrap();
+        let limiter = client.rate_limiter.unwrap();
+        assert!(limiter.check().is_ok());
+        assert!(limiter.check().is_err());
+        for (name, value) in vars.into_iter().zip(previous) {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+
+    #[test]
+    fn test_semantic_source_explicit_rate_overrides_fallback() {
+        let mut config = crate::config::Config::default();
+        config.sources.rate_limits = Some("semantic:0.5".into());
+        assert_eq!(source_settings("semantic", &config).1, 0.5);
+    }
+
+    #[test]
+    fn test_source_settings_proxy_and_fractional_rate() {
+        with_proxy_env(
+            &[(HTTP_PROXY_ENV_VAR, Some("http://global.example:8080"))],
+            || {
+                let mut config = crate::config::Config::default();
+                config.sources.proxy_http =
+                    Some("other:http://other:8080,arxiv:http://source:8080".into());
+                config.sources.rate_limits = Some("arxiv:0.5".into());
+                let (proxy, rate) = source_settings("arxiv", &config);
+                assert_eq!(proxy.http_proxy.as_deref(), Some("http://source:8080"));
+                assert_eq!(rate, 0.5);
+                let (proxy, _) = source_settings("unknown", &config);
+                assert_eq!(
+                    proxy.http_proxy.as_deref(),
+                    Some("http://global.example:8080")
+                );
+            },
+        );
     }
 
     #[test]
@@ -828,6 +968,7 @@ mod tests {
     /// `Proxy::http`/`Proxy::https` identically per traffic scheme.)
     #[tokio::test]
     async fn test_http_traffic_goes_through_proxy() {
+        let _guard = ENV_LOCK.lock().await;
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("GET", "/")
@@ -837,14 +978,15 @@ mod tests {
             .await;
         let url = server.url();
 
-        let client = with_proxy_env(&[(HTTP_PROXY_ENV_VAR, Some("http://127.0.0.1:9"))], || {
-            HttpClient::with_user_agent("research-master-proxy-test").expect("client")
-        });
+        let client =
+            with_proxy_env_locked(&[(HTTP_PROXY_ENV_VAR, Some("http://127.0.0.1:9"))], || {
+                HttpClient::with_user_agent("research-master-proxy-test").expect("client")
+            });
         let proxied = client.get(&url).send().await;
         assert!(proxied.is_err(), "request via dead proxy must fail");
 
         // NO_PROXY containing the target host must bypass the dead proxy.
-        let client_no_proxy = with_proxy_env(
+        let client_no_proxy = with_proxy_env_locked(
             &[
                 (HTTP_PROXY_ENV_VAR, Some("http://127.0.0.1:9")),
                 (NO_PROXY_ENV_VAR, Some("127.0.0.1")),
@@ -854,7 +996,7 @@ mod tests {
         let bypassed = client_no_proxy.get(&url).send().await;
         assert!(bypassed.is_ok(), "NO_PROXY host must bypass the proxy");
 
-        let client_clear = with_proxy_env(&[], || {
+        let client_clear = with_proxy_env_locked(&[], || {
             HttpClient::with_user_agent("research-master-proxy-test").expect("client")
         });
         let direct = client_clear.get(&url).send().await;
