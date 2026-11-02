@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- ClinicalTrials.gov source (36th source, 32nd in the default build): study search, NCT id lookup and auto-detection, DOI lookup via the first study citing the DOI
+- ClinicalTrials.gov source (36th source, 32nd in the default build): study search, NCT id lookup and auto-detection; an explicit DOI query returns the first study citing the DOI and is excluded from cross-source `lookup_by_doi`
 - Zotero sync: `zotero_save` resolves a paper into your Zotero library and `zotero_search` keyword-searches it (`ZOTERO_API_KEY` required, plus `ZOTERO_USER_ID` or `ZOTERO_GROUP_ID`; `RESEARCH_MASTER_ZOTERO_API_URL` overrides the API base)
 - Systematic-review screening: `screening_start`, `screening_next`, `screening_decide` and `screening_summary` tools with PRISMA counting, plus the `systematic_review_screening` prompt; statistics extracted from abstracts (effect sizes, odds/risk/hazard ratios, CIs, p-values, sample sizes) appear in `screening_next`
 - Retraction flags: `library_add` records OpenAlex retraction status for DOI-bearing papers, `library_search` gained `retracted_only`, and watch alerts annotate retracted new hits
@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Google Scholar capabilities reduced to search only (no longer claims DOI lookup)
 
 ### Fixed
+- PubMed: search silently returned nothing for every query — the efetch XML parser never matched attributes (quick-xml requires `@Name` renames) and inline markup like `<italic>` split `$text` into duplicate events; year filters now use `mindate`/`maxdate` bounds (the old `reldate` values were invalid day counts) and the author filter is ANDed into the single `term` parameter instead of emitting a duplicate one
+- OSF: search silently returned nothing because the API rejects literal `[`/`]` in query URLs (now percent-encoded); DOI lookup was removed from the cross-source fan-out and returns an honest error (the API has no filterable `doi` field)
+- ClinicalTrials.gov: `lookup_by_doi` fan-out exclusion (a citing study is not the DOI's paper)
+- Self-update and `doctor --check-connectivity` requests now honor `RESEARCH_MASTER_PROXY` like every lookup client
+- The stdio MCP server now exits after the client closes stdin (pmcp's main loop parks forever after transport close); a short grace period lets the final response flush
+- Screening statistics extraction recognizes U+2212 minus signs
 - Dimensions: user query is properly JSON-escaped into the GraphQL payload; total result count no longer reports the capped page size
 - Expanded unit and integration test coverage; codebase cleanup pass
 

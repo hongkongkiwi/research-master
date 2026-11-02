@@ -130,7 +130,7 @@ Look up a paper by its DOI across all sources that support DOI lookup.
 - `doi` (required): Digital Object Identifier (e.g., "10.48550/arXiv.2301.12345")
 - `source` (optional): Specific source to query (default: all)
 
-**Supported sources:** all enabled sources with DOI lookup capability. In the default build: semantic, openalex, crossref, datacite, inspire, ads, citeseerx, dimensions, ieee_xplore, core, zenodo, openaire, jstor, doaj, osf, springer, mdpi, acm, base, unpaywall
+**Supported sources:** all enabled sources with DOI lookup capability. In the default build: semantic, openalex, crossref, datacite, inspire, ads, citeseerx, dimensions, ieee_xplore, core, zenodo, openaire, jstor, doaj, springer, mdpi, acm, base, unpaywall
 
 ## Utility Tools
 

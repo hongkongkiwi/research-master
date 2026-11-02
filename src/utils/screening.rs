@@ -425,6 +425,9 @@ fn stats_patterns() -> &'static StatsPatterns {
 /// sizes) from abstract-style text. Returns each full matched string,
 /// deduplicated in source order, capped at 20.
 pub fn extract_statistics(text: &str) -> Vec<String> {
+    // Typeset abstracts use U+2212 for minus; normalize so the numeric
+    // patterns match negative values.
+    let text = text.replace('\u{2212}', "-");
     let patterns = stats_patterns();
     let mut found: Vec<String> = Vec::new();
     let mut add = |matched: &str| {
@@ -433,22 +436,22 @@ pub fn extract_statistics(text: &str) -> Vec<String> {
             found.push(value);
         }
     };
-    for m in patterns.effect_size.find_iter(text) {
+    for m in patterns.effect_size.find_iter(&text) {
         add(m.as_str());
     }
-    for m in patterns.correlation.find_iter(text) {
+    for m in patterns.correlation.find_iter(&text) {
         add(m.as_str());
     }
-    for m in patterns.ratio.find_iter(text) {
+    for m in patterns.ratio.find_iter(&text) {
         add(m.as_str());
     }
-    for m in patterns.confidence_interval.find_iter(text) {
+    for m in patterns.confidence_interval.find_iter(&text) {
         add(m.as_str());
     }
-    for m in patterns.p_value.find_iter(text) {
+    for m in patterns.p_value.find_iter(&text) {
         add(m.as_str());
     }
-    for m in patterns.sample_size.find_iter(text) {
+    for m in patterns.sample_size.find_iter(&text) {
         add(m.as_str());
     }
     found.truncate(20);

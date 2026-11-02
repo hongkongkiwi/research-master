@@ -8,6 +8,16 @@ use std::process::Command;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+/// HTTP client for update downloads. Honors the same proxy configuration as
+/// the research sources; plain `reqwest::Client::new()` auto-detects only
+/// HTTP(S)_PROXY and would miss RESEARCH_MASTER_PROXY.
+fn update_client() -> Result<reqwest::Client> {
+    crate::utils::create_proxy_config_from_cli(None, None, None)
+        .apply_to(reqwest::Client::builder())
+        .and_then(|b| b.build())
+        .map_err(anyhow::Error::from)
+}
+
 /// Check if an external binary is available in PATH
 fn is_command_available(name: &str) -> bool {
     Command::new(name)
@@ -138,7 +148,7 @@ pub struct ReleaseAsset {
 
 /// Fetch the latest release information from GitHub
 pub async fn fetch_latest_release() -> Result<ReleaseInfo> {
-    let client = reqwest::Client::new();
+    let client = update_client()?;
     let response = client
         .get("https://api.github.com/repos/hongkongkiwi/research-master/releases/latest")
         .header("User-Agent", "research-master")
@@ -269,7 +279,7 @@ pub fn find_asset_for_platform(release: &ReleaseInfo) -> Option<&ReleaseAsset> {
 
 /// Download and extract a release asset
 pub async fn download_and_extract_asset(asset: &ReleaseAsset, temp_dir: &Path) -> Result<PathBuf> {
-    let client = reqwest::Client::new();
+    let client = update_client()?;
 
     // Download the archive
     eprintln!("Downloading {}...", asset.name);
@@ -463,7 +473,7 @@ pub fn cleanup_temp_files(files: Vec<PathBuf>) {
 
 /// Fetch and verify SHA256 checksum for a file
 pub async fn fetch_and_verify_sha256(asset_name: &str, _temp_dir: &Path) -> Result<String> {
-    let client = reqwest::Client::new();
+    let client = update_client()?;
     let checksums_url =
         "https://github.com/hongkongkiwi/research-master/releases/download/latest/SHA256SUMS.txt";
 
@@ -529,7 +539,7 @@ pub fn verify_sha256(file_path: &Path, expected_hash: &str) -> Result<bool> {
 
 /// Fetch the GPG signature for SHA256SUMS.txt
 pub async fn fetch_sha256_signature() -> Result<String> {
-    let client = reqwest::Client::new();
+    let client = update_client()?;
     let signature_url = "https://github.com/hongkongkiwi/research-master/releases/download/latest/SHA256SUMS.txt.asc";
 
     eprintln!("Downloading GPG signature...");

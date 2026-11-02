@@ -5,7 +5,8 @@
 //!
 //! OSF is free and requires no API key for public data.
 //! A `provider` filter restricts search to one hosted provider, e.g.
-//! PsyArXiv, SocArXiv, engrXiv or EarthArXiv preprints.
+//! PsyArXiv, SocArXiv, engrXiv or EarthArXiv preprints. DOI lookup is not
+//! available: the API has no filterable doi field.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -51,7 +52,9 @@ impl Source for OsfSource {
     }
 
     fn capabilities(&self) -> SourceCapabilities {
-        SourceCapabilities::SEARCH | SourceCapabilities::DOWNLOAD | SourceCapabilities::DOI_LOOKUP
+        // No DOI_LOOKUP: the API v2 preprints endpoint cannot look records up
+        // by DOI (see get_by_doi), so the cross-source fan-out must skip it.
+        SourceCapabilities::SEARCH | SourceCapabilities::DOWNLOAD
     }
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchResponse, SourceError> {
@@ -120,56 +123,16 @@ impl Source for OsfSource {
         Ok(response)
     }
 
-    async fn get_by_doi(&self, doi: &str) -> Result<Paper, SourceError> {
-        let clean_doi = doi
-            .replace("https://doi.org/", "")
-            .replace("doi:", "")
-            .trim()
-            .to_string();
-
-        // Use the preprints endpoint directly for DOI lookup
-        let url = format!(
-            "https://api.osf.io/v2/preprints/{}",
-            urlencoding::encode(&clean_doi)
-        );
-
-        let client = Arc::clone(&self.client);
-        let url_for_retry = url.clone();
-
-        let response = with_retry(api_retry_config(), || {
-            let client = Arc::clone(&client);
-            let url = url_for_retry.clone();
-            async move {
-                let request = client.get(&url);
-
-                let response = request.send().await.map_err(|e| {
-                    SourceError::Network(format!("Failed to lookup DOI in OSF: {}", e))
-                })?;
-
-                if response.status() == 404 {
-                    return Err(SourceError::NotFound(format!(
-                        "Paper not found in OSF: {}",
-                        doi
-                    )));
-                }
-
-                if !response.status().is_success() {
-                    return Err(SourceError::Api(format!(
-                        "OSF API returned status: {}",
-                        response.status()
-                    )));
-                }
-
-                let json: OsfPreprint = response.json().await.map_err(|e| {
-                    SourceError::Parse(format!("Failed to parse OSF response: {}", e))
-                })?;
-
-                Ok(json)
-            }
-        })
-        .await?;
-
-        self.parse_result(&response)
+    async fn get_by_doi(&self, _doi: &str) -> Result<Paper, SourceError> {
+        // OSF API v2 has no DOI lookup: `filter[doi]` is rejected with
+        // "'doi' is not a filterable field" (verified live 2026-11-02) and
+        // /preprints/{id} takes preprint GUIDs, not DOIs. This source
+        // declares no DOI_LOOKUP capability, so the cross-source
+        // lookup_by_doi fan-out never reaches here; explicit calls get an
+        // honest error.
+        Err(SourceError::InvalidRequest(
+            "OSF does not support DOI lookup (the API v2 preprints endpoint has no filterable doi field)".to_string(),
+        ))
     }
 
     async fn download(
@@ -359,13 +322,25 @@ mod tests {
         let caps = source.capabilities();
         assert!(caps.contains(SourceCapabilities::SEARCH));
         assert!(caps.contains(SourceCapabilities::DOWNLOAD));
-        assert!(caps.contains(SourceCapabilities::DOI_LOOKUP));
+        assert!(!caps.contains(SourceCapabilities::DOI_LOOKUP));
         assert_eq!(
             caps,
-            SourceCapabilities::SEARCH
-                | SourceCapabilities::DOWNLOAD
-                | SourceCapabilities::DOI_LOOKUP
+            SourceCapabilities::SEARCH | SourceCapabilities::DOWNLOAD
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_by_doi_returns_honest_unsupported_error() {
+        let source = OsfSource::new().unwrap();
+        let err = source
+            .get_by_doi("10.31219/osf.io/dsk5r")
+            .await
+            .unwrap_err();
+        let msg = match err {
+            SourceError::InvalidRequest(msg) => msg,
+            other => panic!("expected InvalidRequest, got {other:?}"),
+        };
+        assert!(msg.contains("does not support DOI lookup"));
     }
 
     #[test]

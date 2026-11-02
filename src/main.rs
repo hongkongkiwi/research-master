@@ -1743,7 +1743,17 @@ async fn main() -> Result<()> {
                 println!("\n[Connectivity]");
                 for (id, name, _) in &sources_info {
                     let test_url = format!("https://{}.org", id.replace('_', ""));
-                    match reqwest::Client::new().head(&test_url).send().await {
+                    // Same proxy config as the research sources; system
+                    // detection alone would miss RESEARCH_MASTER_PROXY.
+                    let probe_client =
+                        research_master::utils::create_proxy_config_from_cli(None, None, None)
+                            .apply_to(reqwest::Client::builder())
+                            .and_then(|b| b.timeout(std::time::Duration::from_secs(5)).build());
+                    let Ok(client) = probe_client else {
+                        println!("  - {}: ERROR (client build)", name);
+                        continue;
+                    };
+                    match client.head(&test_url).send().await {
                         Ok(resp) => {
                             let status = if resp.status().is_success() {
                                 "OK"

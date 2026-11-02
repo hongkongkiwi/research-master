@@ -64,6 +64,14 @@ impl Transport for NdjsonStdioTransport {
         };
         if bytes_read == 0 {
             self.closed.store(true, Ordering::Release);
+            // pmcp's run_main_loop parks forever once the transport closes,
+            // so without this the process hangs after EOF. The stdio MCP
+            // contract is to exit when the client closes stdin; the grace
+            // period lets any in-flight response finish flushing.
+            tokio::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                std::process::exit(0);
+            });
             return Err(TransportError::ConnectionClosed.into());
         }
         let line = line.trim();

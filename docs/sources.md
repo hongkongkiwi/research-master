@@ -14,7 +14,7 @@ Research Master MCP supports **36 academic research sources** (32 in the default
 | [PMC](https://www.ncbi.nlm.nih.gov/pmc) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | [bioRxiv](https://biorxiv.org) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | [medRxiv](https://medrxiv.org) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
-| [ClinicalTrials.gov](https://clinicaltrials.gov) | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| [ClinicalTrials.gov](https://clinicaltrials.gov) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | [HAL](https://hal.science) | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | [DBLP](https://dblp.org) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | [CiteSeerX](https://citeseerx.ist.psu.edu) | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
@@ -38,7 +38,7 @@ Research Master MCP supports **36 academic research sources** (32 in the default
 | [Connected Papers](https://www.connectedpapers.com) | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ |
 | [DOAJ](https://doaj.org) | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
 | [WorldWideScience](https://www.worldwidescience.org) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| [OSF Preprints](https://osf.io/preprints) | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
+| [OSF Preprints](https://osf.io/preprints) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | [BASE](https://www.base-search.net) | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
 | [Springer](https://link.springer.com) | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | [Google Scholar](https://scholar.google.com) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |

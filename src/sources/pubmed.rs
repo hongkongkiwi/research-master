@@ -116,6 +116,11 @@ impl PubMedSource {
         if let Some(clause) = Self::publication_type_clause(&query.exclude_types, true) {
             term = Self::and_term(term, clause);
         }
+        // Author filter: ANDed into the single term parameter. E-utilities
+        // takes one term; a second term= param would be dropped.
+        if let Some(author) = &query.author {
+            term = Self::and_term(term, format!("{}[AUTH]", author));
+        }
 
         let mut params = vec![
             ("db".to_string(), "pubmed".to_string()),
@@ -124,34 +129,34 @@ impl PubMedSource {
             ("retmode".to_string(), "xml".to_string()),
         ];
 
-        // Add year filter if specified
+        // Add year filter if specified. E-utilities bounds dates through
+        // mindate/maxdate under datetype=pdat; the reldate parameter expects
+        // a day count, not a range, so open-ended years set only the
+        // relevant bound.
         if let Some(year) = &query.year {
-            // PubMed uses various date formats
-            if let Some(start) = year.strip_prefix('-') {
-                // Until year: PDAT less than or equal to YYYY
+            let digits_only = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+            if let Some(end) = year.strip_prefix('-').filter(|y| digits_only(y)) {
+                // "-2020": until year
                 params.push(("datetype".to_string(), "pdat".to_string()));
-                params.push(("reldate".to_string(), format!("{}-01-01:9999", start)));
-            } else if let Some(end) = year.strip_suffix('-') {
-                // From year: PDAT greater than or equal to YYYY
+                params.push(("maxdate".to_string(), format!("{}-12-31", end)));
+            } else if let Some(start) = year.strip_suffix('-').filter(|y| digits_only(y)) {
+                // "2020-": from year
                 params.push(("datetype".to_string(), "pdat".to_string()));
-                params.push(("reldate".to_string(), format!("{}-01-01:9999", end)));
+                params.push(("mindate".to_string(), format!("{}-01-01", start)));
             } else if year.contains('-') {
-                // Range
+                // Range "2019-2021"
                 let parts: Vec<&str> = year.splitn(2, '-').collect();
-                if parts.len() == 2 {
+                if parts.len() == 2 && parts.iter().all(|p| digits_only(p)) {
+                    params.push(("datetype".to_string(), "pdat".to_string()));
                     params.push(("mindate".to_string(), format!("{}-01-01", parts[0])));
                     params.push(("maxdate".to_string(), format!("{}-12-31", parts[1])));
                 }
-            } else if year.len() == 4 {
+            } else if year.len() == 4 && digits_only(year) {
                 // Single year
+                params.push(("datetype".to_string(), "pdat".to_string()));
                 params.push(("mindate".to_string(), format!("{}-01-01", year)));
                 params.push(("maxdate".to_string(), format!("{}-12-31", year)));
             }
-        }
-
-        // Add author filter
-        if let Some(author) = &query.author {
-            params.push(("term".to_string(), format!("{}[AUTH]", author)));
         }
 
         params
@@ -684,22 +689,29 @@ mod tests {
     }
 
     #[test]
-    fn test_build_search_url_with_year_from() {
-        let source = PubMedSource::new().unwrap();
-        let query = SearchQuery::new("cancer").year("2020-");
-        let url = source.build_search_url(&query);
-
-        assert!(url.contains("2020-01-01"));
-    }
-
-    #[test]
     fn test_build_search_url_with_year_until() {
         let source = PubMedSource::new().unwrap();
         let query = SearchQuery::new("cancer").year("-2020");
         let url = source.build_search_url(&query);
 
-        // The implementation uses reldate format for until year
-        assert!(url.contains("2020-01-01"));
+        // Until-year sets only maxdate; no reldate (it means a day count).
+        assert!(url.contains("datetype=pdat"));
+        assert!(url.contains("maxdate=2020-12-31"));
+        assert!(!url.contains("mindate"));
+        assert!(!url.contains("reldate"));
+    }
+
+    #[test]
+    fn test_build_search_url_with_year_from() {
+        let source = PubMedSource::new().unwrap();
+        let query = SearchQuery::new("cancer").year("2020-");
+        let url = source.build_search_url(&query);
+
+        // From-year sets only mindate; no reldate (it means a day count).
+        assert!(url.contains("datetype=pdat"));
+        assert!(url.contains("mindate=2020-01-01"));
+        assert!(!url.contains("maxdate"));
+        assert!(!url.contains("reldate"));
     }
 
     #[test]
@@ -708,7 +720,9 @@ mod tests {
         let query = SearchQuery::new("cancer").author("Smith J");
         let url = source.build_search_url(&query);
 
-        assert!(url.contains("Smith%20J%5BAUTH%5D"));
+        // Author is ANDed into the single term parameter.
+        assert!(url.contains("term=cancer%20AND%20Smith%20J%5BAUTH%5D"));
+        assert_eq!(url.matches("term=").count(), 1);
     }
 
     #[test]
@@ -720,11 +734,11 @@ mod tests {
             .max_results(50);
         let url = source.build_search_url(&query);
 
-        assert!(url.contains("term=cancer"));
-        assert!(url.contains("term=Smith%20J%5BAUTH%5D"));
+        assert!(url.contains("term=cancer%20AND%20Smith%20J%5BAUTH%5D"));
+        assert_eq!(url.matches("term=").count(), 1);
         assert!(url.contains("retmax=50"));
-        assert!(url.contains("2019-01-01"));
-        assert!(url.contains("2021-12-31"));
+        assert!(url.contains("mindate=2019-01-01"));
+        assert!(url.contains("maxdate=2021-12-31"));
     }
 
     #[test]
