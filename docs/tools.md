@@ -1,6 +1,6 @@
 # Available MCP Tools
 
-Once connected via MCP, the following **18 unified tools** are available. These tools automatically select the best source based on your input, or you can specify a source explicitly.
+Once connected via MCP, the following **36 unified tools** are available. These tools automatically select the best source based on your input, or you can specify a source explicitly.
 
 ## Core Research Tools
 
@@ -189,11 +189,27 @@ Save paper metadata to a local JSON library file for later reference, with optio
 
 ### web_search
 
-Search the general web for information, as a fallback when paper sources don't have enough results. Requires the `EXA_API_KEY` environment variable.
+Search the general web for information, as a fallback when paper sources don't have enough results. Uses the first configured of `EXA_API_KEY`, `TAVILY_API_KEY`, or `BRAVE_API_KEY`; if that provider fails at request time, the next configured one is tried.
 
 **Parameters:**
 - `query` (required): Search query
 - `max_results` (optional): Maximum results (default: 5)
+
+### web_extract
+
+Fetch a URL and return its readable text. HTML pages are reduced to the title plus block text (headings, paragraphs, list items, quotes, code blocks); scripts, styles and navigation are dropped. PDF URLs are downloaded and run through the same extraction as `read_paper`. Useful for paper landing pages, supplementary material, blog posts, or any page surfaced by `web_search`.
+
+**Parameters:**
+- `url` (required): http(s) URL to fetch and extract
+- `max_chars` (optional): Maximum characters of text to return (default: 20000, cap: 100000)
+
+### github_search
+
+Search GitHub repositories. Useful for finding the code implementation accompanying a paper, plus datasets and research tools. Optional `GITHUB_API_KEY` raises the rate limit from 10 to 30 searches per minute; a rejected (revoked/expired) key automatically falls back to anonymous search.
+
+**Parameters:**
+- `query` (required): Repository search query (GitHub search syntax, e.g. `transformer attention language:python`)
+- `max_results` (optional): Maximum results, 1-20 (default: 5)
 
 The unified tools use intelligent source auto-detection:
 

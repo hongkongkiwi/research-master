@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `web_extract` MCP tool: fetch a URL and return readable text (HTML reduced to title plus block text; PDF URLs run through the PDF extractor)
+- `github_search` MCP tool: find repositories with a paper's code, datasets, and tools (`GITHUB_API_KEY` optional; a rejected key falls back to anonymous search)
+- `web_search` multi-provider fallback: tries Exa, then Tavily (`TAVILY_API_KEY`), then Brave (`BRAVE_API_KEY`) using the first configured key, and falls through on provider failure
 - Selectable MCP transports: `research-master mcp --transport stdio|sse|http` (stdio default; `sse` serves the legacy HTTP+SSE protocol with `GET /sse` and `POST /messages?sessionId=`; `http` is streamable HTTP; `--http`/`--stdio` keep working)
 - `--no-web` global flag disables the local history panel
 - DataCite, INSPIRE-HEP and NASA ADS sources

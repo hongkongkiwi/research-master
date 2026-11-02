@@ -10,9 +10,9 @@ use crate::sources::SourceRegistry;
 pub use super::unified_tools::{
     AuthorProfileHandler, BatchGetPapersHandler, CitationGraphHandler, DeduplicatePapersHandler,
     DownloadPaperHandler, ExportPapersHandler, GetCitationsHandler, GetPaperHandler,
-    GetReferencesHandler, GetRelatedPapersHandler, ListSourcesHandler, LookupByDoiHandler,
-    ReadPaperHandler, RecommendPapersHandler, SearchByAuthorHandler, SearchPapersHandler,
-    WebSearchHandler, WritePaperHandler,
+    GetReferencesHandler, GetRelatedPapersHandler, GithubSearchHandler, ListSourcesHandler,
+    LookupByDoiHandler, ReadPaperHandler, RecommendPapersHandler, SearchByAuthorHandler,
+    SearchPapersHandler, WebExtractHandler, WebSearchHandler, WritePaperHandler,
 };
 
 /// An MCP tool that can be called by the client
@@ -559,10 +559,10 @@ impl ToolRegistry {
             handler: Arc::new(WritePaperHandler),
         });
 
-        // 18. web_search - General web search
+        // 18. web_search - General web search (Exa, Tavily, or Brave)
         self.register(Tool {
             name: "web_search".to_string(),
-            description: "Search the general web for information. Used as a fallback when paper sources don't have enough results. Requires EXA_API_KEY environment variable.".to_string(),
+            description: "Search the general web for information. Used as a fallback when paper sources don't have enough results. Uses the first configured of EXA_API_KEY, TAVILY_API_KEY, or BRAVE_API_KEY; if that provider fails, falls back to the next.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -579,6 +579,53 @@ impl ToolRegistry {
                 "required": ["query"]
             }),
             handler: Arc::new(WebSearchHandler),
+        });
+
+        // 19. web_extract - Read a web page or PDF URL as text
+        self.register(Tool {
+            name: "web_extract".to_string(),
+            description: "Fetch a URL and return its readable text: HTML pages are reduced to title plus block text (scripts, styles and navigation dropped), PDFs are run through the same extraction as read_paper. Use for paper landing pages, supplementary material, blog posts, or any page referenced in search results.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "http(s) URL to fetch and extract"
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Maximum characters of text to return (default 20000, cap 100000)",
+                        "default": 20000
+                    }
+                },
+                "required": ["url"]
+            }),
+            handler: Arc::new(WebExtractHandler),
+        });
+
+        // 20. github_search - Find repositories (paper code, datasets, tools)
+        self.register(Tool {
+            name: "github_search".to_string(),
+            description: "Search GitHub repositories by query. Useful for finding the code implementation accompanying a paper, plus datasets and research tools. Optional GITHUB_API_KEY raises the rate limit from 10 to 30 searches per minute.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Repository search query (GitHub search syntax, e.g. 'transformer attention language:python')"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum results (1-20)",
+                        "default": 5
+                    }
+                },
+                "required": ["query"]
+            }),
+            handler: Arc::new(GithubSearchHandler {
+                api_base: None,
+                api_key: None,
+            }),
         });
 
         // Evidence: smart-citation tallies plus retraction lookup.
@@ -916,7 +963,7 @@ mod tests {
         let names: std::collections::HashSet<&str> =
             tools.iter().map(|tool| tool.name.as_str()).collect();
 
-        assert_eq!(tools.len(), 34);
+        assert_eq!(tools.len(), 36);
         for expected in [
             "search_papers",
             "search_by_author",
@@ -936,6 +983,8 @@ mod tests {
             "recommend_papers",
             "write_paper",
             "web_search",
+            "web_extract",
+            "github_search",
         ] {
             assert!(names.contains(expected), "missing tool {expected}");
         }

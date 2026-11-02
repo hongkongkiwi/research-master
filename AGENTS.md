@@ -47,7 +47,7 @@ cargo fmt
 - **`src/lib.rs`** - Library root, exports public API
 - **`src/main.rs`** - CLI entry point using clap for argument parsing
 - **`src/sources/`** - Plugin-based architecture with 35 research sources
-- **`src/mcp/`** - MCP protocol server implementation (18 unified tools)
+- **`src/mcp/`** - MCP protocol server implementation (36 unified tools)
 - **`src/models/`** - Core data structures (Paper, SearchQuery, etc.)
 - **`src/panel.rs`** - Local web panel for browsing search and download history
 - **`src/config/`** - Environment and file-based configuration

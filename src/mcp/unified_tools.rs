@@ -1351,8 +1351,16 @@ fn get_library_path() -> Result<std::path::PathBuf, String> {
 }
 
 /// Handler for general web search (fallback when paper sources are insufficient)
+///
+/// Providers are tried in order using the first configured key:
+/// Exa (`EXA_API_KEY`), Tavily (`TAVILY_API_KEY`), Brave (`BRAVE_API_KEY`).
+/// If a configured provider fails at request time, the next one is tried.
 #[derive(Debug)]
 pub struct WebSearchHandler;
+
+const EXA_SEARCH_URL: &str = "https://api.exa.ai/search";
+const TAVILY_SEARCH_URL: &str = "https://api.tavily.com/search";
+const BRAVE_SEARCH_URL: &str = "https://api.search.brave.com/res/v1/web/search";
 
 #[async_trait::async_trait]
 impl ToolHandler for WebSearchHandler {
@@ -1367,24 +1375,65 @@ impl ToolHandler for WebSearchHandler {
             .and_then(|v| v.as_u64())
             .unwrap_or(5) as usize;
 
-        // Try Exa API first (requires EXA_API_KEY)
-        if let Some(api_key) = std::env::var("EXA_API_KEY").ok().filter(|k| !k.is_empty()) {
-            return search_exa(query, max_results, &api_key).await;
+        let mut failures: Vec<String> = Vec::new();
+
+        if let Some(api_key) = env_key("EXA_API_KEY") {
+            match search_exa(query, max_results, &api_key, EXA_SEARCH_URL).await {
+                Ok(v) => return Ok(v),
+                Err(e) => failures.push(format!("Exa: {e}")),
+            }
+        }
+        if let Some(api_key) = env_key("TAVILY_API_KEY") {
+            match search_tavily(query, max_results, &api_key, TAVILY_SEARCH_URL).await {
+                Ok(v) => return Ok(v),
+                Err(e) => failures.push(format!("Tavily: {e}")),
+            }
+        }
+        if let Some(api_key) = env_key("BRAVE_API_KEY") {
+            match search_brave(query, max_results, &api_key, BRAVE_SEARCH_URL).await {
+                Ok(v) => return Ok(v),
+                Err(e) => failures.push(format!("Brave: {e}")),
+            }
         }
 
-        Err("Web search requires EXA_API_KEY environment variable. Get one at https://dashboard.exa.ai/api-keys".to_string())
+        if failures.is_empty() {
+            return Err(missing_web_search_keys_error());
+        }
+        Err(format!(
+            "All configured web search providers failed: {}",
+            failures.join("; ")
+        ))
     }
 }
 
-/// Search using the Exa API
-async fn search_exa(query: &str, max_results: usize, api_key: &str) -> Result<Value, String> {
-    let client = reqwest::Client::builder()
+fn env_key(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|k| !k.trim().is_empty())
+}
+
+fn missing_web_search_keys_error() -> String {
+    "Web search requires one of: EXA_API_KEY (https://dashboard.exa.ai/api-keys), \
+     TAVILY_API_KEY (https://tavily.com), or BRAVE_API_KEY (https://brave.com/search/api/)"
+        .to_string()
+}
+
+fn web_search_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))
+}
+
+/// Search using the Exa API
+async fn search_exa(
+    query: &str,
+    max_results: usize,
+    api_key: &str,
+    base_url: &str,
+) -> Result<Value, String> {
+    let client = web_search_client()?;
 
     let response = client
-        .post("https://api.exa.ai/search")
+        .post(base_url)
         .header("x-api-key", api_key)
         .header("content-type", "application/json")
         .json(&serde_json::json!({
@@ -1416,14 +1465,430 @@ async fn search_exa(query: &str, max_results: usize, api_key: &str) -> Result<Va
         }))
         .collect::<Vec<_>>();
 
+    web_search_output(query, "exa", results)
+}
+
+/// Search using the Tavily API
+async fn search_tavily(
+    query: &str,
+    max_results: usize,
+    api_key: &str,
+    base_url: &str,
+) -> Result<Value, String> {
+    let client = web_search_client()?;
+
+    let response = client
+        .post(base_url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({
+            "query": query,
+            "max_results": max_results.min(10),
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Tavily search request failed: {}", e))?;
+
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Tavily response: {}", e))?;
+
+    let results = body["results"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "title": r["title"].as_str().unwrap_or(""),
+                "url": r["url"].as_str().unwrap_or(""),
+                "snippet": r.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+                "source": "tavily",
+            })
+        })
+        .collect::<Vec<_>>();
+
+    web_search_output(query, "tavily", results)
+}
+
+/// Search using the Brave Search API
+async fn search_brave(
+    query: &str,
+    max_results: usize,
+    api_key: &str,
+    base_url: &str,
+) -> Result<Value, String> {
+    let client = web_search_client()?;
+    let count = max_results.min(10).to_string();
+
+    let response = client
+        .get(base_url)
+        .header("X-Subscription-Token", api_key)
+        .header("Accept", "application/json")
+        .query(&[("q", query), ("count", count.as_str())])
+        .send()
+        .await
+        .map_err(|e| format!("Brave search request failed: {}", e))?;
+
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Brave response: {}", e))?;
+
+    let results = body["web"]["results"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "title": r["title"].as_str().unwrap_or(""),
+                "url": r["url"].as_str().unwrap_or(""),
+                "snippet": r.get("description").and_then(|v| v.as_str()).unwrap_or(""),
+                "source": "brave",
+            })
+        })
+        .collect::<Vec<_>>();
+
+    web_search_output(query, "brave", results)
+}
+
+fn web_search_output(query: &str, provider: &str, results: Vec<Value>) -> Result<Value, String> {
     let output = serde_json::json!({
         "query": query,
-        "source": "exa",
+        "source": provider,
         "total_results": results.len(),
         "results": results,
     });
-
     serde_json::to_value(output).map_err(|e| e.to_string())
+}
+
+/// Handler for extracting readable text from a web page or PDF URL
+///
+/// Plain HTML is reduced to title plus block text (headings, paragraphs,
+/// lists, quotes, code blocks) with scripts and styles excluded. PDFs are
+/// downloaded and run through the same extraction as `read_paper`.
+#[derive(Debug)]
+pub struct WebExtractHandler;
+
+const WEB_EXTRACT_MAX_BYTES: usize = 2 * 1024 * 1024;
+const WEB_EXTRACT_PDF_MAX_BYTES: usize = 20 * 1024 * 1024;
+const WEB_EXTRACT_MAX_CHARS_CAP: usize = 100_000;
+
+#[async_trait::async_trait]
+impl ToolHandler for WebExtractHandler {
+    async fn execute(&self, args: Value) -> Result<Value, String> {
+        let url = args
+            .get("url")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing 'url' parameter")?;
+
+        let max_chars = args
+            .get("max_chars")
+            .and_then(|v| v.as_u64())
+            .map(|v| v.min(WEB_EXTRACT_MAX_CHARS_CAP as u64) as usize)
+            .unwrap_or(20_000);
+
+        let parsed = url::Url::parse(url).map_err(|e| format!("Invalid URL '{url}': {e}"))?;
+        if parsed.scheme() != "http" && parsed.scheme() != "https" {
+            return Err(format!(
+                "Only http(s) URLs are supported, got '{}'",
+                parsed.scheme()
+            ));
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .user_agent(format!("research-master/{}", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to fetch {url}: {e}"))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!("Fetch failed: HTTP {status} for {url}"));
+        }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        let is_pdf = content_type.contains("application/pdf")
+            || parsed.path().to_ascii_lowercase().ends_with(".pdf");
+        let byte_cap = if is_pdf {
+            WEB_EXTRACT_PDF_MAX_BYTES
+        } else {
+            WEB_EXTRACT_MAX_BYTES
+        };
+        if let Some(len) = response.content_length() {
+            if len as usize > byte_cap {
+                return Err(format!(
+                    "Response too large: {} bytes (limit {byte_cap}) for {url}",
+                    len
+                ));
+            }
+        }
+
+        let (title, text, kind) = if is_pdf {
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|e| format!("Failed to read PDF body: {e}"))?;
+            if bytes.len() > byte_cap {
+                return Err(format!(
+                    "PDF too large: {} bytes (limit {byte_cap}) for {url}",
+                    bytes.len()
+                ));
+            }
+            let mut tmp = tempfile::Builder::new()
+                .suffix(".pdf")
+                .tempfile()
+                .map_err(|e| format!("Failed to create temp file: {e}"))?;
+            std::io::Write::write_all(&mut tmp, &bytes)
+                .map_err(|e| format!("Failed to write temp file: {e}"))?;
+            let text = crate::utils::extract_text_simple(tmp.path())
+                .map_err(|e| format!("PDF extraction failed: {e}"))?;
+            (String::new(), text, "application/pdf".to_string())
+        } else {
+            let body = response
+                .text()
+                .await
+                .map_err(|e| format!("Failed to read response body: {e}"))?;
+            if content_type.contains("html") || body.trim_start().starts_with('<') {
+                let (title, text) = extract_html_text(&body);
+                (title, text, "text/html".to_string())
+            } else {
+                (String::new(), body, content_type)
+            }
+        };
+
+        let total_chars = text.chars().count();
+        let (content, truncated) = if total_chars > max_chars {
+            (text.chars().take(max_chars).collect::<String>(), true)
+        } else {
+            (text, false)
+        };
+
+        let output = serde_json::json!({
+            "url": url,
+            "title": title,
+            "content_type": kind,
+            "total_chars": total_chars,
+            "returned_chars": content.chars().count(),
+            "truncated": truncated,
+            "text": content,
+        });
+        serde_json::to_value(output).map_err(|e| e.to_string())
+    }
+}
+
+/// Reduce an HTML document to its title plus block-level text, in document
+/// order. Scripts, styles and other non-content elements never match the
+/// block tag set, so their text is dropped naturally.
+fn extract_html_text(html: &str) -> (String, String) {
+    use scraper::{Html, Selector};
+
+    const BLOCK_TAGS: [&str; 12] = [
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "p",
+        "li",
+        "blockquote",
+        "pre",
+        "figcaption",
+        "td",
+    ];
+
+    fn collapse(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    let doc = Html::parse_document(html);
+
+    let title = Selector::parse("title")
+        .ok()
+        .and_then(|sel| doc.select(&sel).next())
+        .map(|el| collapse(&el.text().collect::<String>()))
+        .unwrap_or_default();
+
+    let container = ["article", "main", "body"]
+        .iter()
+        .find_map(|tag| {
+            Selector::parse(tag)
+                .ok()
+                .and_then(|sel| doc.select(&sel).next())
+        })
+        .unwrap_or_else(|| doc.root_element());
+
+    let mut blocks: Vec<String> = Vec::new();
+    for node in container.descendants() {
+        let Some(el) = scraper::ElementRef::wrap(node) else {
+            continue;
+        };
+        if !BLOCK_TAGS.contains(&el.value().name()) {
+            continue;
+        }
+        // Skip nested blocks (a p inside an li, a pre inside a blockquote):
+        // the outer block's text already covers them.
+        let mut ancestor = node.parent();
+        let mut nested = false;
+        while let Some(a) = ancestor {
+            if let Some(ae) = a.value().as_element() {
+                if BLOCK_TAGS.contains(&ae.name()) {
+                    nested = true;
+                    break;
+                }
+            }
+            ancestor = a.parent();
+        }
+        if nested {
+            continue;
+        }
+        let text = collapse(&el.text().collect::<String>());
+        if !text.is_empty() {
+            blocks.push(text);
+        }
+    }
+
+    if blocks.is_empty() {
+        // No recognized blocks: fall back to all visible-ish text.
+        let text = collapse(&container.text().collect::<String>());
+        return (title, text);
+    }
+
+    (title, blocks.join("\n\n"))
+}
+
+/// Handler for searching GitHub repositories (code accompanying papers,
+/// datasets, tools)
+#[derive(Debug)]
+pub struct GithubSearchHandler {
+    /// Override for tests (mockito); None uses the public GitHub API.
+    pub api_base: Option<String>,
+    /// Override for tests; None reads GITHUB_API_KEY from the environment.
+    pub api_key: Option<String>,
+}
+
+const GITHUB_SEARCH_URL: &str = "https://api.github.com/search/repositories";
+
+fn github_request(
+    client: &reqwest::Client,
+    base_url: &str,
+    query: &str,
+    per_page: &str,
+    api_key: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let mut request = client
+        .get(base_url)
+        .query(&[("q", query), ("per_page", per_page)])
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header(
+            "User-Agent",
+            format!("research-master/{}", env!("CARGO_PKG_VERSION")),
+        );
+    if let Some(api_key) = api_key {
+        request = request.header("Authorization", format!("Bearer {api_key}"));
+    }
+    request
+}
+
+#[async_trait::async_trait]
+impl ToolHandler for GithubSearchHandler {
+    async fn execute(&self, args: Value) -> Result<Value, String> {
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing 'query' parameter")?;
+
+        let max_results = args
+            .get("max_results")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5)
+            .clamp(1, 20) as usize;
+
+        let base_url = self.api_base.as_deref().unwrap_or(GITHUB_SEARCH_URL);
+
+        let client = web_search_client()?;
+        let per_page = max_results.to_string();
+        let api_key = self.api_key.clone().or_else(|| env_key("GITHUB_API_KEY"));
+
+        let mut response = github_request(&client, base_url, query, &per_page, api_key.as_deref())
+            .send()
+            .await
+            .map_err(|e| format!("GitHub search request failed: {}", e))?;
+
+        let mut status = response.status();
+        // A revoked or expired key must not take the tool down: retry
+        // anonymously (10 searches/minute still works without a key).
+        if status.as_u16() == 401 && api_key.is_some() {
+            tracing::warn!("GITHUB_API_KEY rejected with HTTP 401; retrying anonymously");
+            response = github_request(&client, base_url, query, &per_page, None)
+                .send()
+                .await
+                .map_err(|e| format!("GitHub search request failed: {}", e))?;
+            status = response.status();
+            if status.as_u16() == 401 {
+                return Err(
+                    "GitHub rejected GITHUB_API_KEY with HTTP 401 and the anonymous retry also \
+                     failed; refresh or unset the key"
+                        .to_string(),
+                );
+            }
+        }
+
+        if status.as_u16() == 403 || status.as_u16() == 429 {
+            return Err(format!(
+                "GitHub rate limit hit (HTTP {status}). Set GITHUB_API_KEY for 30 searches/minute: \
+                 https://github.com/settings/tokens"
+            ));
+        }
+        if !status.is_success() {
+            return Err(format!("GitHub search failed: HTTP {status}"));
+        }
+
+        let body: Value = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse GitHub response: {}", e))?;
+
+        let results = body["items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| {
+                serde_json::json!({
+                    "full_name": r["full_name"].as_str().unwrap_or(""),
+                    "url": r["html_url"].as_str().unwrap_or(""),
+                    "description": r.get("description").and_then(|v| v.as_str()).unwrap_or(""),
+                    "stars": r["stargazers_count"].as_u64().unwrap_or(0),
+                    "language": r.get("language").and_then(|v| v.as_str()).unwrap_or(""),
+                    "updated_at": r.get("updated_at").and_then(|v| v.as_str()).unwrap_or(""),
+                    "topics": r.get("topics").cloned().unwrap_or(serde_json::json!([])),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let output = serde_json::json!({
+            "query": query,
+            "total_results": results.len(),
+            "results": results,
+        });
+        serde_json::to_value(output).map_err(|e| e.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -1730,5 +2195,261 @@ mod tests {
             .expect("mark strategy should succeed");
         let marked_papers = mark_result.as_array().expect("mark result array");
         assert_eq!(marked_papers.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_web_extract_handler_extracts_html_blocks() {
+        let mut server = mockito::Server::new_async().await;
+        let body = r#"<html><head><title>On Attention</title><style>body{}</style></head>
+            <body><script>alert("noise");</script>
+            <nav>Menu Menu</nav>
+            <article><h2>Results</h2><p>Attention  improves results.</p>
+            <ul><li>First finding</li></ul></article></body></html>"#;
+        let mock = server
+            .mock("GET", "/page")
+            .with_status(200)
+            .with_header("content-type", "text/html; charset=utf-8")
+            .with_body(body)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let handler = WebExtractHandler;
+        let out = handler
+            .execute(json!({"url": format!("{}/page", server.url())}))
+            .await
+            .expect("web_extract should succeed");
+        mock.assert_async().await;
+
+        assert_eq!(out["title"], "On Attention");
+        assert_eq!(out["content_type"], "text/html");
+        assert_eq!(out["truncated"], false);
+        let text = out["text"].as_str().expect("text field");
+        assert!(text.contains("Results"), "heading kept: {text}");
+        assert!(
+            text.contains("Attention improves results."),
+            "paragraph collapsed: {text}"
+        );
+        assert!(text.contains("First finding"), "list item kept: {text}");
+        assert!(!text.contains("noise"), "script text dropped: {text}");
+        assert!(!text.contains("Menu"), "nav text dropped: {text}");
+    }
+
+    #[tokio::test]
+    async fn test_web_extract_handler_truncates_to_max_chars() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/long")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body("<html><body><p>abcdefghijklmnop</p></body></html>")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let handler = WebExtractHandler;
+        let out = handler
+            .execute(json!({"url": format!("{}/long", server.url()), "max_chars": 8}))
+            .await
+            .expect("web_extract should succeed");
+        mock.assert_async().await;
+
+        assert_eq!(out["truncated"], true);
+        assert_eq!(out["returned_chars"], 8);
+        assert_eq!(out["total_chars"], 16);
+        assert!(out["text"].as_str().unwrap().starts_with("abcdefgh"));
+    }
+
+    #[tokio::test]
+    async fn test_web_extract_handler_rejects_non_http_scheme() {
+        let handler = WebExtractHandler;
+        let result = handler
+            .execute(json!({"url": "ftp://example.com/file"}))
+            .await;
+        let err = result.expect_err("non-http scheme should fail");
+        assert!(
+            err.contains("http(s)"),
+            "error names scheme restriction: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_web_extract_handler_routes_pdf_content_to_pdf_extraction() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", mockito::Matcher::Regex(r"/paper\.pdf.*".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/pdf")
+            .with_body("%PDF-1.4 not actually a pdf")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let handler = WebExtractHandler;
+        let result = handler
+            .execute(json!({"url": format!("{}/paper.pdf", server.url())}))
+            .await;
+        mock.assert_async().await;
+        let err = result.expect_err("garbage pdf should fail extraction");
+        assert!(
+            err.contains("PDF extraction failed"),
+            "pdf branch should route through the pdf extractor: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_github_search_handler_maps_repositories() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"^/search/repositories.*".to_string()),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"items":[{"full_name":"org/repo","html_url":"https://github.com/org/repo",
+                    "description":"code for the paper","stargazers_count":42,
+                    "language":"Python","updated_at":"2026-01-01T00:00:00Z",
+                    "topics":["machine-learning"]}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let handler = GithubSearchHandler {
+            api_base: Some(format!("{}/search/repositories", server.url())),
+            api_key: None,
+        };
+        let out = handler
+            .execute(json!({"query": "attention is all you need", "max_results": 1}))
+            .await
+            .expect("github_search should succeed");
+        mock.assert_async().await;
+
+        assert_eq!(out["total_results"], 1);
+        let repo = &out["results"][0];
+        assert_eq!(repo["full_name"], "org/repo");
+        assert_eq!(repo["stars"], 42);
+        assert_eq!(repo["language"], "Python");
+        assert_eq!(repo["topics"][0], "machine-learning");
+    }
+
+    #[tokio::test]
+    async fn test_github_search_handler_reports_rate_limit_with_key_hint() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(403)
+            .with_body(r#"{"message":"API rate limit exceeded"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let handler = GithubSearchHandler {
+            api_base: Some(format!("{}/search/repositories", server.url())),
+            api_key: None,
+        };
+        let result = handler.execute(json!({"query": "test"})).await;
+        mock.assert_async().await;
+        let err = result.expect_err("rate limit should error");
+        assert!(
+            err.contains("GITHUB_API_KEY"),
+            "error should hint at the key: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_github_search_handler_falls_back_to_anonymous_on_401() {
+        let mut server = mockito::Server::new_async().await;
+        let with_key = server
+            .mock("GET", mockito::Matcher::Any)
+            .match_header("authorization", mockito::Matcher::Any)
+            .with_status(401)
+            .with_body(r#"{"message":"Bad credentials"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let anonymous = server
+            .mock("GET", mockito::Matcher::Any)
+            .match_header("authorization", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"items":[{"full_name":"org/repo","html_url":"https://github.com/org/repo",
+                    "stargazers_count":7}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let handler = GithubSearchHandler {
+            api_base: Some(format!("{}/search/repositories", server.url())),
+            api_key: Some("expired-token".to_string()),
+        };
+        let out = handler
+            .execute(json!({"query": "test"}))
+            .await
+            .expect("rejected key should fall back to anonymous search");
+        with_key.assert_async().await;
+        anonymous.assert_async().await;
+
+        assert_eq!(out["results"][0]["full_name"], "org/repo");
+    }
+
+    #[tokio::test]
+    async fn test_search_tavily_maps_content_snippets() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/search")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"results":[{"title":"Study","url":"https://example.com/a",
+                    "content":"The full content text"}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let out = search_tavily("query", 5, "key", &format!("{}/search", server.url()))
+            .await
+            .expect("tavily search should succeed");
+        mock.assert_async().await;
+
+        assert_eq!(out["source"], "tavily");
+        assert_eq!(out["results"][0]["snippet"], "The full content text");
+    }
+
+    #[tokio::test]
+    async fn test_search_brave_maps_description_snippets() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", mockito::Matcher::Regex(r"^/web.*".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"web":{"results":[{"title":"Study","url":"https://example.com/a",
+                    "description":"The brave description"}]}}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let out = search_brave("query", 5, "key", &format!("{}/web", server.url()))
+            .await
+            .expect("brave search should succeed");
+        mock.assert_async().await;
+
+        assert_eq!(out["source"], "brave");
+        assert_eq!(out["results"][0]["snippet"], "The brave description");
+    }
+
+    #[test]
+    fn test_missing_web_search_keys_error_names_all_providers() {
+        let err = missing_web_search_keys_error();
+        assert!(err.contains("EXA_API_KEY"));
+        assert!(err.contains("TAVILY_API_KEY"));
+        assert!(err.contains("BRAVE_API_KEY"));
     }
 }

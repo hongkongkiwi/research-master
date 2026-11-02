@@ -580,6 +580,8 @@ fn expected_mcp_tool_names() -> Vec<&'static str> {
         "recommend_papers",
         "write_paper",
         "web_search",
+        "web_extract",
+        "github_search",
         "get_citation_tallies",
         "get_paper_outline",
         "read_paper_section",

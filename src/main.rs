@@ -831,6 +831,12 @@ fn print_env_vars() {
         "  OPENALEX_EMAIL              Email identifying requests to OpenAlex (metadata only)"
     );
     println!();
+    println!("Web Tools:");
+    println!("  EXA_API_KEY                 Web search provider (web_search)");
+    println!("  TAVILY_API_KEY              Web search fallback (web_search)");
+    println!("  BRAVE_API_KEY               Web search fallback (web_search)");
+    println!("  GITHUB_API_KEY              Higher GitHub search rate limit (github_search)");
+    println!();
     println!("Source-Specific Rate Limits:");
     println!("  SEMANTIC_SCHOLAR_RATE_LIMIT  Semantic Scholar requests per second (default: 1)");
     println!();
