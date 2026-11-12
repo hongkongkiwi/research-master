@@ -71,16 +71,21 @@ where
 
 #[test]
 fn test_api_key_environment_restored_after_panic() {
+    let before: Vec<_> = {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        TEST_API_KEY_VARS
+            .iter()
+            .map(|&key| (key, std::env::var_os(key)))
+            .collect()
+    };
     let result = std::panic::catch_unwind(|| {
         with_api_keys(|| panic!("test environment cleanup"));
     });
     assert!(result.is_err());
-    with_api_keys(|| {
-        assert_eq!(
-            std::env::var("ACM_API_KEY").unwrap(),
-            "test_key_for_integration_tests"
-        );
-    });
+    let _guard = env_lock().lock().expect("panic must not poison env lock");
+    for (key, value) in before {
+        assert_eq!(std::env::var_os(key), value, "environment variable: {key}");
+    }
 }
 
 fn expected_source_count() -> usize {

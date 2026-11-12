@@ -236,13 +236,7 @@ pub fn get_current_target() -> &'static str {
                 ""
             }
         }
-        "aarch64" => {
-            if os == "apple-darwin" {
-                "aarch64-apple-darwin"
-            } else {
-                ""
-            }
-        }
+        "aarch64" if os == "apple-darwin" => "aarch64-apple-darwin",
         _ => "",
     }
 }

@@ -198,6 +198,8 @@ use async_trait::async_trait;
 /// 2. Implement the required methods (at minimum `id`, `name`, and `search`)
 /// 3. Implement optional methods if the source supports them
 /// 4. Add the source to `SourceRegistry::new()` or register it dynamically
+// async_trait adds #[must_use] to methods returning already must-use futures.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Source: Send + Sync + std::fmt::Debug {
     /// Unique identifier for this source (used in tool names, e.g., "arxiv", "pubmed")
