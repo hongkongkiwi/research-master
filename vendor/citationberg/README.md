@@ -39,10 +39,8 @@ let Style::Independent(independent) = style else {
 assert_eq!(independent.info.title.value, "IEEE");
 ```
 
-Be sure to check out the CSL
-[styles](https://github.com/citation-style-language/styles) and
-[locales](https://github.com/citation-style-language/locales) repositories into
-sibling folders of `citationberg` if you want to run the tests.
+The tests use the bundled CSL style and locale fixtures; no sibling repositories
+are required.
 
 ## Safety
 This crate forbids unsafe code.
