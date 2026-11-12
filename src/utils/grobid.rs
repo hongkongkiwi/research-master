@@ -4,11 +4,11 @@
 use std::path::Path;
 
 use quick_xml::events::{BytesStart, Event};
-use quick_xml::reader::Reader;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 
 use crate::models::{Paper, PaperBuilder, SourceType};
 use crate::sources::SourceError;
+use crate::utils::xml::{XmlEvent, XmlReader};
 use crate::utils::HttpClient;
 
 /// GROBID base URL used when `GROBID_URL` is unset.
@@ -209,8 +209,7 @@ struct Bibl {
 /// provisional ids `grobid:{index}`; [`extract_references`] stamps the final
 /// `grobid:{filename}:{index}` ids.
 pub(crate) fn parse_references_tei(xml: &str) -> Result<Vec<Paper>, SourceError> {
-    let mut reader = Reader::from_str(xml);
-    let mut buf = Vec::new();
+    let mut reader = XmlReader::new(xml);
     let mut papers: Vec<Paper> = Vec::new();
     let mut bibl: Option<Bibl> = None;
     let mut in_author = false;
@@ -219,8 +218,8 @@ pub(crate) fn parse_references_tei(xml: &str) -> Result<Vec<Paper>, SourceError>
     let mut mode = TextMode::None;
 
     loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => match local_name(e).as_str() {
+        match reader.read_event() {
+            Ok(XmlEvent::Event(Event::Start(ref e))) => match local_name(e).as_str() {
                 "biblStruct" => {
                     bibl = Some(Bibl::default());
                     mode = TextMode::None;
@@ -266,7 +265,7 @@ pub(crate) fn parse_references_tei(xml: &str) -> Result<Vec<Paper>, SourceError>
                 // nested markup still accumulates.
                 _ => {}
             },
-            Ok(Event::End(ref e)) => match end_local_name(e).as_str() {
+            Ok(XmlEvent::Event(Event::End(ref e))) => match end_local_name(e).as_str() {
                 "forename" | "surname" | "title" | "date" | "idno" => mode = TextMode::None,
                 "author" => {
                     mode = TextMode::None;
@@ -298,15 +297,15 @@ pub(crate) fn parse_references_tei(xml: &str) -> Result<Vec<Paper>, SourceError>
                 }
                 _ => {}
             },
-            Ok(Event::Empty(ref e)) if local_name(e) == "date" => {
+            Ok(XmlEvent::Event(Event::Empty(ref e))) if local_name(e) == "date" => {
                 if let Some(b) = bibl.as_mut() {
                     if b.year.is_none() {
                         b.year = attr_value(e, "when").and_then(|w| year_of(&w));
                     }
                 }
             }
-            Ok(Event::Text(ref e)) => {
-                let Ok(text) = e.unescape() else {
+            Ok(XmlEvent::Text(text)) => {
+                let Ok(text) = text else {
                     continue;
                 };
                 let text = text.trim();
@@ -326,7 +325,7 @@ pub(crate) fn parse_references_tei(xml: &str) -> Result<Vec<Paper>, SourceError>
                     }
                 }
             }
-            Ok(Event::Eof) => break,
+            Ok(XmlEvent::Event(Event::Eof)) => break,
             Ok(_) => {}
             Err(e) => return Err(SourceError::Parse(format!("invalid GROBID TEI: {e}"))),
         }
@@ -359,8 +358,7 @@ fn bibl_to_paper(bibl: Bibl, index: usize) -> Paper {
 /// the DOI when present, else a placeholder that [`extract_header`] replaces
 /// with `grobid:{filename}`. `Ok(None)` when no title element exists.
 pub(crate) fn parse_header_tei(xml: &str) -> Result<Option<Paper>, SourceError> {
-    let mut reader = Reader::from_str(xml);
-    let mut buf = Vec::new();
+    let mut reader = XmlReader::new(xml);
     let mut title_plain = String::new();
     let mut title_a = String::new();
     let mut title_m = String::new();
@@ -375,8 +373,8 @@ pub(crate) fn parse_header_tei(xml: &str) -> Result<Option<Paper>, SourceError> 
     let mut mode = TextMode::None;
 
     loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => match local_name(e).as_str() {
+        match reader.read_event() {
+            Ok(XmlEvent::Event(Event::Start(ref e))) => match local_name(e).as_str() {
                 "title" => {
                     mode = match attr_value(e, "level").as_deref() {
                         None if title_plain.is_empty() => TextMode::TitlePlain,
@@ -410,7 +408,7 @@ pub(crate) fn parse_header_tei(xml: &str) -> Result<Option<Paper>, SourceError> 
                 }
                 _ => {}
             },
-            Ok(Event::End(ref e)) => match end_local_name(e).as_str() {
+            Ok(XmlEvent::Event(Event::End(ref e))) => match end_local_name(e).as_str() {
                 "title" | "abstract" | "forename" | "surname" | "date" | "idno" => {
                     mode = TextMode::None
                 }
@@ -436,11 +434,13 @@ pub(crate) fn parse_header_tei(xml: &str) -> Result<Option<Paper>, SourceError> 
                 }
                 _ => {}
             },
-            Ok(Event::Empty(ref e)) if local_name(e) == "date" && year.is_none() => {
+            Ok(XmlEvent::Event(Event::Empty(ref e)))
+                if local_name(e) == "date" && year.is_none() =>
+            {
                 year = attr_value(e, "when").and_then(|w| year_of(&w));
             }
-            Ok(Event::Text(ref e)) => {
-                let Ok(text) = e.unescape() else {
+            Ok(XmlEvent::Text(text)) => {
+                let Ok(text) = text else {
                     continue;
                 };
                 let text = text.trim();
@@ -460,7 +460,7 @@ pub(crate) fn parse_header_tei(xml: &str) -> Result<Option<Paper>, SourceError> 
                     _ => {}
                 }
             }
-            Ok(Event::Eof) => break,
+            Ok(XmlEvent::Event(Event::Eof)) => break,
             Ok(_) => {}
             Err(e) => return Err(SourceError::Parse(format!("invalid GROBID TEI: {e}"))),
         }

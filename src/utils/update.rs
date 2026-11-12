@@ -397,10 +397,11 @@ fn extract_zip(archive_path: &Path, dest_dir: &Path) -> Result<PathBuf> {
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
-        if !safe_archive_path(entry.name()) {
-            bail!("Unsafe archive entry: {}", entry.name());
+        let name = entry.name()?;
+        if !safe_archive_path(&name) {
+            bail!("Unsafe archive entry: {}", name);
         }
-        let out_path = dest_dir.join(entry.name());
+        let out_path = dest_dir.join(name.as_ref());
 
         if entry.is_dir() {
             fs::create_dir_all(&out_path)?;

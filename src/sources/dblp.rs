@@ -2,9 +2,9 @@
 //!
 //! Uses DBLP XML API for computer science bibliography.
 
+use crate::utils::xml::{XmlEvent, XmlReader};
 use async_trait::async_trait;
 use quick_xml::events::Event;
-use quick_xml::reader::Reader;
 use std::sync::Arc;
 
 use crate::models::{Paper, PaperBuilder, SearchQuery, SearchResponse, SourceType};
@@ -34,9 +34,7 @@ impl DblpSource {
 
     /// Parse DBLP XML response into papers using quick-xml
     fn parse_xml(&self, xml_content: &str) -> Result<Vec<Paper>, SourceError> {
-        let mut reader = Reader::from_str(xml_content);
-        // trim_text is not available in newer quick-xml, configure via config
-        let mut buf = Vec::new();
+        let mut reader = XmlReader::new(xml_content);
 
         let mut papers = Vec::new();
 
@@ -55,8 +53,8 @@ impl DblpSource {
         let mut title_depth = 0usize;
 
         loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) => {
+            match reader.read_event() {
+                Ok(XmlEvent::Event(Event::Start(ref e))) => {
                     if e.name().as_ref() == b"hit" {
                         in_hit = true;
                         hit_depth = 1;
@@ -81,9 +79,9 @@ impl DblpSource {
                         }
                     }
                 }
-                Ok(Event::Text(e)) => {
+                Ok(XmlEvent::Text(text)) => {
                     if in_hit {
-                        let text = e.unescape().unwrap_or_default();
+                        let text = text.unwrap_or_default();
                         if title_depth > 0 {
                             current_hit_title.push_str(&text);
                             continue;
@@ -106,7 +104,7 @@ impl DblpSource {
                         }
                     }
                 }
-                Ok(Event::End(ref e)) => {
+                Ok(XmlEvent::Event(Event::End(ref e))) => {
                     if e.name().as_ref() == b"hit" {
                         if hit_depth == 1 && !current_hit_key.is_empty() {
                             // Create paper from parsed hit
@@ -145,7 +143,7 @@ impl DblpSource {
                         }
                     }
                 }
-                Ok(Event::Eof) => break,
+                Ok(XmlEvent::Event(Event::Eof)) => break,
                 Ok(_) => {
                     // Ignore other events (Empty, Comment, CData, Decl, PI)
                     if in_hit {
@@ -156,7 +154,6 @@ impl DblpSource {
                     return Err(SourceError::Parse(format!("XML parsing error: {}", e)));
                 }
             }
-            buf.clear();
         }
 
         Ok(papers)

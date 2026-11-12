@@ -11,7 +11,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use crate::models::{Paper, SearchQuery, SearchResponse, SourceType};
+use crate::models::{Paper, SearchQuery, SearchResponse};
 use crate::sources::{Source, SourceCapabilities, SourceError};
 use crate::utils::{api_retry_config, with_retry, HttpClient};
 

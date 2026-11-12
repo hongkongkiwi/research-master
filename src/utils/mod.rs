@@ -51,6 +51,7 @@ mod retry;
 mod streaming;
 mod update;
 mod validate;
+pub(crate) mod xml;
 
 pub mod library;
 pub use library::{LibraryEntry, PaperLibrary};

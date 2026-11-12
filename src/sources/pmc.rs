@@ -2,7 +2,6 @@
 
 use async_trait::async_trait;
 use quick_xml::events::{BytesStart, Event};
-use quick_xml::reader::Reader;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -10,6 +9,7 @@ use crate::models::{
     Paper, PaperBuilder, ReadRequest, ReadResult, SearchQuery, SearchResponse, SourceType,
 };
 use crate::sources::{DownloadRequest, DownloadResult, Source, SourceCapabilities, SourceError};
+use crate::utils::xml::{XmlEvent, XmlReader};
 use crate::utils::{api_retry_config, with_retry, HttpClient};
 
 const PMC_EUTILS_BASE: &str = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
@@ -40,8 +40,7 @@ impl PmcSource {
 
     /// Parse PMC XML response into Paper using quick-xml
     fn parse_pmc_xml(&self, xml_content: &str, pmcid: &str) -> Result<Paper, SourceError> {
-        let mut reader = Reader::from_str(xml_content);
-        let mut buf = Vec::new();
+        let mut reader = XmlReader::new(xml_content);
 
         let mut title = String::new();
         let mut abstract_text = String::new();
@@ -74,8 +73,8 @@ impl PmcSource {
         let mut abstract_depth = 0usize;
 
         loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) => {
+            match reader.read_event() {
+                Ok(XmlEvent::Event(Event::Start(ref e))) => {
                     // Convert element name to owned String to avoid lifetime issues
                     let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                     if title_depth > 0 {
@@ -148,8 +147,8 @@ impl PmcSource {
                         _ => current_element = Element::None,
                     }
                 }
-                Ok(Event::Text(e)) => {
-                    let raw = e.unescape().unwrap_or_default();
+                Ok(XmlEvent::Text(text)) => {
+                    let raw = text.unwrap_or_default();
                     if matches!(current_element, Element::ArticleTitle) {
                         title.push_str(&raw);
                         continue;
@@ -196,7 +195,7 @@ impl PmcSource {
                         Element::None => {}
                     }
                 }
-                Ok(Event::End(ref e)) => {
+                Ok(XmlEvent::Event(Event::End(ref e))) => {
                     if title_depth > 0 {
                         title_depth -= 1;
                         if title_depth == 0 {
@@ -256,13 +255,12 @@ impl PmcSource {
                         _ => current_element = Element::None,
                     }
                 }
-                Ok(Event::Eof) => break,
+                Ok(XmlEvent::Event(Event::Eof)) => break,
                 Ok(_) => {}
                 Err(e) => {
                     return Err(SourceError::Parse(format!("XML parsing error: {}", e)));
                 }
             }
-            buf.clear();
         }
 
         // Build date string
