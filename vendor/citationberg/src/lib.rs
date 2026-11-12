@@ -3694,75 +3694,46 @@ mod test {
         );
     }
 
-    /// Be sure to check out the CSL
-    /// [styles](https://github.com/citation-style-language/styles) repository
-    /// into a sibling folder to run this test.
     #[test]
     fn roundtrip_cbor_all() {
-        fs::create_dir_all("tests/artifacts/styles").unwrap();
-        for style_thing in
-            fs::read_dir("../styles/").expect("please check out the CSL styles repo")
-        {
-            let thing = style_thing.unwrap();
-            if thing.file_type().unwrap().is_dir() {
-                continue;
-            }
-
-            let path = thing.path();
-            let extension = path.extension();
-            if let Some(extension) = extension {
-                if extension.to_str() != Some("csl") {
-                    continue;
-                }
-            } else {
-                continue;
-            }
-
-            eprintln!("Testing {}", path.display());
-            let source = fs::read_to_string(&path).unwrap();
-            let style = Style::from_xml(&source).unwrap();
-            let cbor = to_cbor(&style);
-            fs::write(
-                format!(
-                    "tests/artifacts/styles/{}.cbor",
-                    path.file_stem().unwrap().to_str().unwrap()
-                ),
-                &cbor,
-            )
-            .unwrap();
-            let style2 = from_cbor(&cbor);
-            assert_eq!(style, style2);
-        }
-    }
-
-    /// Be sure to check out the CSL
-    /// [locales](https://github.com/citation-style-language/locales) repository
-    /// into a sibling folder to run this test.
-    #[test]
-    fn roundtrip_cbor_all_locales() {
-        fs::create_dir_all("tests/artifacts/locales").unwrap();
-        for style_thing in
-            fs::read_dir("../locales/").expect("please check out the CSL locales repo")
-        {
-            let thing = style_thing.unwrap();
-            if thing.file_type().unwrap().is_dir() {
-                continue;
-            }
-
-            let path = thing.path();
-            let extension = path.extension();
-            if let Some(extension) = extension {
-                if extension.to_str() != Some("xml")
-                    || !path
-                        .file_stem()
-                        .unwrap()
-                        .to_str()
-                        .unwrap()
-                        .starts_with("locales-")
+        for directory in ["tests/independent", "tests/dependent"] {
+            let mut count = 0;
+            for entry in fs::read_dir(directory).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if !entry.file_type().unwrap().is_file()
+                    || path.extension().and_then(|ext| ext.to_str()) != Some("csl")
                 {
                     continue;
                 }
-            } else {
+
+                eprintln!("Testing {}", path.display());
+                let source = fs::read_to_string(&path).unwrap();
+                let style = Style::from_xml(&source).unwrap();
+                let cbor = to_cbor(&style);
+                let style2 = from_cbor(&cbor);
+                assert_eq!(style, style2);
+                count += 1;
+            }
+            assert!(count > 0, "no style fixtures in {directory}");
+        }
+    }
+
+    #[test]
+    fn roundtrip_cbor_all_locales() {
+        let mut count = 0;
+        for entry in fs::read_dir("tests/locales").unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if !entry.file_type().unwrap().is_file()
+                || path.extension().and_then(|ext| ext.to_str()) != Some("xml")
+                || !path
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("locales-")
+            {
                 continue;
             }
 
@@ -3770,17 +3741,11 @@ mod test {
             let source = fs::read_to_string(&path).unwrap();
             let locale = LocaleFile::from_xml(&source).unwrap();
             let cbor = to_cbor(&locale);
-            fs::write(
-                format!(
-                    "tests/artifacts/locales/{}.cbor",
-                    path.file_stem().unwrap().to_str().unwrap()
-                ),
-                &cbor,
-            )
-            .unwrap();
             let locale2 = from_cbor(&cbor);
             assert_eq!(locale, locale2);
+            count += 1;
         }
+        assert!(count > 0, "no locale fixtures in tests/locales");
     }
 
     #[test]

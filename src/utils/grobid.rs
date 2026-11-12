@@ -401,10 +401,11 @@ pub(crate) fn parse_header_tei(xml: &str) -> Result<Option<Paper>, SourceError> 
                         }
                     }
                 }
-                "idno" if doi.is_none() => {
-                    if attr_value(e, "type").is_some_and(|t| t.eq_ignore_ascii_case("doi")) {
-                        mode = TextMode::Doi;
-                    }
+                "idno"
+                    if doi.is_none()
+                        && attr_value(e, "type").is_some_and(|t| t.eq_ignore_ascii_case("doi")) =>
+                {
+                    mode = TextMode::Doi;
                 }
                 _ => {}
             },

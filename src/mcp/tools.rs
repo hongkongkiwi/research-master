@@ -42,6 +42,8 @@ impl std::fmt::Debug for Tool {
 }
 
 /// Handler for executing a tool
+// async_trait adds #[must_use] to methods returning already must-use futures.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait ToolHandler: Send + Sync + std::fmt::Debug {
     /// Execute the tool with the given arguments

@@ -60,9 +60,32 @@ where
         .collect();
 
     setup_api_keys();
-    let result = test();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
     restore_env(saved);
-    result
+    drop(_guard);
+    match result {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+#[test]
+fn test_api_key_environment_restored_after_panic() {
+    let before: Vec<_> = {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        TEST_API_KEY_VARS
+            .iter()
+            .map(|&key| (key, std::env::var_os(key)))
+            .collect()
+    };
+    let result = std::panic::catch_unwind(|| {
+        with_api_keys(|| panic!("test environment cleanup"));
+    });
+    assert!(result.is_err());
+    let _guard = env_lock().lock().expect("panic must not poison env lock");
+    for (key, value) in before {
+        assert_eq!(std::env::var_os(key), value, "environment variable: {key}");
+    }
 }
 
 fn expected_source_count() -> usize {
@@ -230,10 +253,19 @@ async fn test_all_sources_registered() {
         assert!(source_ids.contains(&"osf"));
         assert!(source_ids.contains(&"base"));
         assert!(source_ids.contains(&"springer"));
-        // Opt-in only: endpoints dead or no public API (not in default features).
-        assert!(!source_ids.contains(&"scispace"));
-        assert!(!source_ids.contains(&"connected_papers"));
-        assert!(!source_ids.contains(&"worldwidescience"));
+        for (source, enabled) in [
+            ("scispace", cfg!(feature = "source-scispace")),
+            (
+                "connected_papers",
+                cfg!(feature = "source-connected_papers"),
+            ),
+            (
+                "worldwidescience",
+                cfg!(feature = "source-worldwidescience"),
+            ),
+        ] {
+            assert_eq!(source_ids.contains(&source), enabled, "source: {source}");
+        }
         if cfg!(feature = "source-google_scholar") {
             assert!(source_ids.contains(&"google_scholar"));
         } else {

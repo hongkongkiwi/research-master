@@ -3107,7 +3107,6 @@ mod tests {
                 source,
                 pages,
                 output_file,
-                path: _,
                 ..
             }) => {
                 assert_eq!(paper_id, "2301.12345");

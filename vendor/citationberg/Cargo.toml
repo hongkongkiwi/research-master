@@ -1,7 +1,8 @@
 # Vendored from citationberg 0.7.0 (crates.io), upstream commit
 # 25c66d5f79d919fb8446ef33075a70977066e82c at https://github.com/typst/citationberg.
-# Local change: upgrade quick-xml to 0.41 for RUSTSEC-2026-0194 and RUSTSEC-2026-0195.
-# Source, test fixtures, README, rustfmt config, and license notices are unchanged.
+# Local changes: upgrade quick-xml to 0.41 for RUSTSEC-2026-0194 and RUSTSEC-2026-0195;
+# use bundled fixtures for the CBOR roundtrip tests and update the README test instructions.
+# Runtime source, test fixtures, rustfmt config, and license notices are unchanged.
 [package]
 name = "citationberg"
 version = "0.7.0"

@@ -236,13 +236,7 @@ pub fn get_current_target() -> &'static str {
                 ""
             }
         }
-        "aarch64" => {
-            if os == "apple-darwin" {
-                "aarch64-apple-darwin"
-            } else {
-                ""
-            }
-        }
+        "aarch64" if os == "apple-darwin" => "aarch64-apple-darwin",
         _ => "",
     }
 }
@@ -688,6 +682,46 @@ mod tests {
         assert!(!super::safe_archive_path("C:\\evil"));
         assert!(!super::safe_archive_path("/evil"));
         assert!(super::safe_archive_path("bin/research-master.exe"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_extract_zip_preserves_binary_and_rejects_traversal() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        for (name, safe) in [
+            ("research-master.exe", true),
+            ("../outside.exe", false),
+            ("..\\outside.exe", false),
+            ("C:\\outside.exe", false),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let archive_path = root.path().join("update.zip");
+            let destination = root.path().join("extracted");
+            fs::create_dir(&destination).unwrap();
+            let file = fs::File::create(&archive_path).unwrap();
+            let mut writer = zip::ZipWriter::new(file);
+            writer
+                .start_file(name, SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"updater test binary").unwrap();
+            writer.finish().unwrap();
+
+            let result = super::extract_zip(&archive_path, &destination);
+            if safe {
+                let binary = result.unwrap();
+                assert_eq!(binary, destination.join("research-master.exe"));
+                assert_eq!(fs::read(binary).unwrap(), b"updater test binary");
+            } else {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Unsafe archive entry"));
+                assert!(!root.path().join("outside.exe").exists());
+                assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+            }
+        }
     }
 
     use super::*;
